@@ -1,0 +1,47 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          swift --version
+          uname -m
+      - name: Release build
+        run: swift build -c release
+      - name: Full tests including native fixture
+        run: zsh Scripts/test.sh
+      - name: Swift formatting
+        run: xcrun swift-format lint --strict --recursive Sources Tests Package.swift Scripts/make-icon.swift
+      - name: C static analysis
+        run: |
+          mkdir -p build
+          xcrun clang --analyze Sources/CSystem/CSystem.c -I Sources/CSystem/include -o build/CSystem.plist
+      - name: Shell syntax
+        run: zsh -n Scripts/build-app.sh Scripts/build-direct.sh Scripts/test.sh
+      - name: Package app
+        env:
+          SENTINEL_OUTPUT_DIR: ${{ runner.temp }}/MemorySentinel-dist
+          SENTINEL_ARCHIVE_PATH: ${{ runner.temp }}/MemorySentinel-macOS-arm64.zip
+        run: |
+          test "$(uname -m)" = arm64
+          zsh Scripts/build-app.sh
+          codesign --verify --strict "$SENTINEL_OUTPUT_DIR/MemorySentinel.app"
