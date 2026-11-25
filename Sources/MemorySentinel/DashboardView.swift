@@ -15,7 +15,7 @@ struct DashboardView: View {
       VStack(spacing: 0) {
         header
         Divider().opacity(0.5)
-        if let error = model.errorMessage {
+        if let error = model.errorMessage ?? model.experience.error {
           HStack {
             Image(systemName: "exclamationmark.triangle")
             Text(error).font(.caption)
@@ -23,6 +23,13 @@ struct DashboardView: View {
             FixButton(origin: FixOrigin(issue: model.errorKind))
             Button("Dismiss") { model.errorMessage = nil }
           }.padding(12).background(.orange.opacity(0.12))
+        }
+        if let message = model.experienceMessage {
+          HStack {
+            Text(message).font(.caption); Spacer();
+            Button("Dismiss") { model.experienceMessage = nil }
+          }
+          .padding(12).background(.mint.opacity(0.08))
         }
         if model.demo || model.paused {
           HStack {
@@ -42,13 +49,26 @@ struct DashboardView: View {
           switch section {
           case "Processes": ProcessExplorer()
           case "Incidents": IncidentView()
+          case "Profiles": ProfilesView()
+          case "Recordings": RecordingsView()
+          case "Sessions": SessionsView()
           case "Simulation": simulationView
           default: overview
           }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
       }.background(Color(nsColor: .windowBackgroundColor))
     }.frame(minWidth: 980, minHeight: 650)
+      .disabled(model.maintenance)
+      .overlay {
+        if model.maintenance {
+          ProgressView("Restoring local history…").padding(30).background(
+            .regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+      }
       .onAppear {
+        if let requested = model.requestedSection {
+          section = requested; model.requestedSection = nil
+        }
         onboarding = !model.settings.onboardingComplete
         model.openFix = {
           openWindow(id: "fix"); NSApp.activate(ignoringOtherApps: true)
@@ -59,6 +79,10 @@ struct DashboardView: View {
         }
       }
       .sheet(isPresented: $onboarding) { onboardingView }
+      .sheet(item: $model.reportRequest) { ReportPreview(request: $0).environmentObject(model) }
+      .onChange(of: model.requestedSection) { _, requested in
+        if let requested { section = requested; model.requestedSection = nil }
+      }
   }
   private var sidebar: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -75,6 +99,9 @@ struct DashboardView: View {
       nav("Overview", "square.grid.2x2")
       nav("Processes", "cpu")
       nav("Incidents", "clock.arrow.circlepath")
+      nav("Recordings", "record.circle")
+      nav("Sessions", "timer")
+      nav("Profiles", "slider.horizontal.3")
       nav("Simulation", "testtube.2")
       Spacer()
       VStack(alignment: .leading, spacing: 9) {
@@ -102,6 +129,7 @@ struct DashboardView: View {
       HStack(spacing: 12) {
         Image(systemName: symbol).frame(width: 18)
         Text(title).font(.system(size: 12, weight: section == title ? .semibold : .regular))
+          .lineLimit(1).minimumScaleFactor(0.85)
         Spacer()
         if title == "Incidents" && !model.incidents.isEmpty {
           Text("\(model.incidents.count)").font(.system(size: 9, weight: .bold)).foregroundStyle(
@@ -120,10 +148,10 @@ struct DashboardView: View {
       }
       Spacer()
       if let s = model.snapshot {
+        ProfilePicker().frame(width: 150)
         VStack(alignment: .trailing, spacing: 5) {
           RiskBadge(level: s.risk)
-          Text("Updated \(s.date.formatted(date:.omitted,time:.standard))").font(.system(size: 9))
-            .foregroundStyle(.tertiary).monospacedDigit()
+          SampleFreshness()
         }
       }
       Button {
@@ -138,26 +166,42 @@ struct DashboardView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 22) {
         if let s = model.snapshot {
+          let advisory = model.experience.alerts.max { $0.level < $1.level }
+          let headlineRisk = max(s.risk, advisory?.level ?? .normal)
+          let advisoryLeads = (advisory?.level ?? .normal) > s.risk
           HStack(spacing: 16) {
-            Image(systemName: s.risk.symbol).font(.system(size: 28)).foregroundStyle(s.risk.color)
+            Image(systemName: headlineRisk.symbol).font(.system(size: 28)).foregroundStyle(
+              headlineRisk.color)
             VStack(alignment: .leading, spacing: 5) {
               Text(
-                s.hasUnavailableMemoryReadings
-                  ? "Some memory signals are unavailable"
-                  : s.risk == .normal
-                    ? "Memory is in a healthy range"
-                    : s.risk == .elevated
-                      ? "Memory activity needs a closer look"
-                      : "Memory pressure needs your attention"
+                s.risk >= .warning
+                  ? "Memory signals need your attention"
+                  : s.hasUnavailableMemoryReadings
+                    ? "Some memory signals are unavailable"
+                    : advisoryLeads
+                      ? advisory?.title ?? "An application needs attention"
+                      : s.risk == .normal
+                        ? "Memory is in a healthy range"
+                        : s.risk == .elevated
+                          ? "Memory activity needs a closer look"
+                          : "Memory pressure needs your attention"
               ).font(.system(size: 18, weight: .medium))
-              Text(s.reasons.first ?? "No warning signals detected in the available measurements.")
-                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+              Text(
+                advisoryLeads
+                  ? advisory?.evidence ?? "Review the application cards below."
+                  : s.reasons.first ?? "No warning signals detected in the available measurements."
+              )
+              .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
-            FixButton().buttonStyle(.borderedProminent).tint(s.risk.color).foregroundStyle(.black)
+            FixButton(
+              origin: FixOrigin(
+                identity: advisoryLeads ? advisory?.event.process : nil, demoSource: model.demo)
+            )
+            .buttonStyle(.borderedProminent).tint(headlineRisk.color).foregroundStyle(.black)
           }.padding(20).frame(maxWidth: .infinity, alignment: .leading).background(
-            s.risk.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 16)
-          ).overlay(RoundedRectangle(cornerRadius: 16).stroke(s.risk.color.opacity(0.17)))
+            headlineRisk.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 16)
+          ).overlay(RoundedRectangle(cornerRadius: 16).stroke(headlineRisk.color.opacity(0.17)))
           LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 13), count: 3), spacing: 13
           ) {
@@ -186,6 +230,8 @@ struct DashboardView: View {
               subtitle: "Compressor physical: \(Format.bytes(s.system.compressed))",
               symbol: "internaldrive", color: .purple)
           }
+          AppHealthCards()
+          SnoozeStatus()
           Surface { TimelineChart() }
           HStack(alignment: .top, spacing: 16) {
             insights(s)
@@ -268,7 +314,7 @@ struct DashboardView: View {
           Picker(
             "Scenario",
             selection: Binding(get: { model.scenario }, set: { model.changeScenario($0) })
-          ) { ForEach(SimulationScenario.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+          ) { ForEach(SimulationScenario.allCases, id: \.self) { Text($0.title).tag($0) } }
           .disabled(!model.demo)
           Text(
             "Each scenario seeds 15 minutes of synthetic history. Native incident notifications, persistence and process actions are disabled. Live monitoring resumes when Simulation Mode is switched off."

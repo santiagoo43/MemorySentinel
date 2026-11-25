@@ -6,6 +6,13 @@ import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
+  @Published var experience = ExperienceSummary()
+  @Published var experienceMessage: String?
+  @Published var requestedSection: String?
+  @Published var showSessionComposer = false
+  @Published var reportRequest: ReportRequest?
+  @Published var maintenance = false
+  @Published var exportingDiagnostics = false
   @Published var fixSession: FixSession?
   @Published var fixHistory: [FixSession] = []
   @Published var fixReady = false
@@ -22,20 +29,35 @@ final class AppModel: ObservableObject {
   @Published var notificationTestResult: String?
   @Published var settings: SentinelCore.Settings {
     didSet {
-      do { try settingsStore.save(settings) } catch { errorMessage = error.localizedDescription }
-      if settings.warningFraction != oldValue.warningFraction
-        || settings.criticalFraction != oldValue.criticalFraction
-        || settings.growthMiB != oldValue.growthMiB
-        || settings.swapGrowthMiB != oldValue.swapGrowthMiB
-        || settings.watchRules != oldValue.watchRules
-        || settings.excludedPaths != oldValue.excludedPaths
+      var normalized = settings.validated()
+      if normalized.activeProfileID == oldValue.activeProfileID,
+        normalized.watchRules != oldValue.watchRules
+          || normalized.excludedPaths != oldValue.excludedPaths
+          || normalized.disabledBuiltIns != oldValue.disabledBuiltIns
+          || normalized.notifications != oldValue.notifications,
+        let i = normalized.profiles?.firstIndex(where: { $0.id == normalized.activeProfileID })
       {
-        invalidateFix("Relevant settings changed. Assess a new plan.")
+        normalized.profiles![i].watchRules = normalized.watchRules
+        normalized.profiles![i].excludedPaths = normalized.excludedPaths
+        normalized.profiles![i].disabledBuiltIns = normalized.disabledBuiltIns ?? []
+        normalized.profiles![i].notifications = normalized.notifications
       }
-      Task { await engine?.configure(settings) }
+      if normalized != settings { settings = normalized }
+      do { try settingsStore.save(settings) } catch { errorMessage = error.localizedDescription }
+      if settings.analysisSignature != oldValue.analysisSignature {
+        invalidateFix("Relevant settings changed. Assess a new plan.")
+        experience.apps = []; experience.alerts = []
+      }
+      configurationRevision &+= 1
+      let revision = configurationRevision, value = settings
+      Task { await engine?.configure(value, revision: revision) }
     }
   }
   let history: HistoryStore?
+  let liveExperience: ExperienceCoordinator
+  let demoExperience: ExperienceCoordinator
+  var analytics: ExperienceCoordinator { demo ? demoExperience : liveExperience }
+  private var configurationRevision: UInt64 = 0
   private let settingsStore = SettingsStore()
   private var engine: MonitoringEngine?
   private var liveFixHistory: [FixSession] = []
@@ -52,14 +74,20 @@ final class AppModel: ObservableObject {
   private var historyRefresh: Date = .distantPast
   var selectedRange: TimeInterval = 900
   init() {
-    settings = settingsStore.load()
+    let loaded = settingsStore.load()
+    settings = loaded.activeProfile.applying(to: loaded).validated()
     do { history = try HistoryStore() } catch {
       history = nil
       errorKind = .historyFailure
       errorMessage =
         "History unavailable: \(error.localizedDescription). Live monitoring continues."
     }
-    engine = MonitoringEngine(settings: settings, history: history) { [weak self] update in
+    liveExperience = ExperienceCoordinator(history: history)
+    demoExperience = ExperienceCoordinator(history: nil, demo: true)
+    engine = MonitoringEngine(
+      settings: settings, history: history,
+      experience: liveExperience, demoExperience: demoExperience
+    ) { [weak self] update in
       await self?.receive(update)
     }
     if let engine {
@@ -86,6 +114,8 @@ final class AppModel: ObservableObject {
       Task { @MainActor in
         guard let self else { return }
         self.invalidateFix("The Mac woke from sleep. Assess a new plan.")
+        await self.analytics.interrupt(
+          reason: "The Mac slept or woke; observation continuity changed.")
         await self.engine?.resetAfterWake()
         await self.engine?.pause(self.paused)
         await self.engine?.sample()
@@ -96,6 +126,7 @@ final class AppModel: ObservableObject {
     ) { [weak self] _ in
       Task { @MainActor in
         self?.invalidateFix("The Mac is sleeping; remaining Fix steps were cancelled.");
+        await self?.analytics.interrupt(reason: "System sleep interrupted observation.")
         await self?.engine?.pause(true)
       }
     }
@@ -110,6 +141,8 @@ final class AppModel: ObservableObject {
     ])
     refreshLoginStatus()
     Task {
+      await liveExperience.restore()
+      experience = await liveExperience.summary()
       if let history {
         if let recovered = await history.recoveryMessage { errorMessage = recovered }
         do {
@@ -134,6 +167,8 @@ final class AppModel: ObservableObject {
   }
   private func receive(_ update: EngineUpdate) async {
     guard update.snapshot.demo == demo else { return }
+    if let signature = update.configuration, signature != settings.analysisSignature { return }
+    if let state = update.experience { experience = state }
     snapshot = update.snapshot
     if let seed = update.seed {
       timeline = seed
@@ -152,8 +187,15 @@ final class AppModel: ObservableObject {
       incidents.insert(contentsOf: update.incidents, at: 0)
       incidents.sort { $0.date > $1.date }
       if incidents.count > 300 { incidents.removeLast(incidents.count - 300) }
-      if !demo && settings.notifications && notificationStatus == "Allowed" {
-        await notify(update.incidents)
+    }
+    if !demo && settings.notifications && notificationStatus == "Allowed" {
+      let suppressed = Set(update.experience?.suppressedIncidentIDs ?? [])
+      let coreAlerts = update.incidents.filter { !suppressed.contains($0.id) }
+      let appAlerts = (update.experience?.newAlerts ?? []).filter { !$0.snoozed }
+      if !coreAlerts.isEmpty {
+        await notify(coreAlerts)
+      } else if let alert = appAlerts.first {
+        await notifyExperience(alert, additional: appAlerts.count - 1)
       }
     }
     if !demo && Date().timeIntervalSince(historyRefresh) > 30 { await refreshTimeline() }
@@ -169,18 +211,23 @@ final class AppModel: ObservableObject {
     } catch { errorMessage = error.localizedDescription }
   }
   func setPaused(_ value: Bool) {
+    guard !maintenance else { return }
     invalidateFix("Monitoring pause state changed. Assess a new plan.")
     paused = value
+    let tracker = analytics
     Task {
+      if value { await tracker.interrupt(reason: "Monitoring paused by you.") }
       await engine?.pause(value)
       if !value { await engine?.sample() }
     }
   }
   func setDemo(_ value: Bool) async {
+    guard !maintenance else { return }
     interventionGate.invalidate(demo: value)
     await fixCoordinator?.cancel(
       message: "Monitoring mode changed. No further native actions will be sent.")
     demo = value
+    experience = await analytics.summary()
     demoFixHistory = []
     fixHistory = value ? [] : liveFixHistory
     snapshot = nil
@@ -285,32 +332,42 @@ final class AppModel: ObservableObject {
       refreshLoginStatus()
     }
   }
-  func export(csv: Bool) {
+  func export(csv: Bool, window: NSWindow? = nil) {
     guard !demo else { errorMessage = "Return to live mode to export recorded history."; return }
-    let panel = NSSavePanel()
-    panel.nameFieldStringValue =
-      "MemorySentinel-\(Int(Date().timeIntervalSince1970)).\(csv ? "csv" : "json")"
-    panel.canCreateDirectories = true
-    guard panel.runModal() == .OK, let url = panel.url else { return }
-    Task {
+    guard !exportingDiagnostics else { return }
+    exportingDiagnostics = true
+    Task { @MainActor in
+      defer { exportingDiagnostics = false }
       do {
-        guard let history else { throw HistoryError.database("History is unavailable") }
+        guard
+          let url = try await SaveDestination.choose(
+            name: "MemorySentinel-\(Int(Date().timeIntervalSince1970)).\(csv ? "csv" : "json")",
+            type: csv ? .commaSeparatedText : .json, window: window
+          ), !demo
+        else { return }
+        guard let history = self.history else {
+          throw HistoryError.database("History is unavailable")
+        }
         try await history.export(to: url, csv: csv)
-      } catch { errorMessage = error.localizedDescription }
+      } catch { self.errorMessage = error.localizedDescription }
     }
   }
   func clearHistory() {
     if demo { demoFixHistory = []; fixHistory = []; timeline = []; incidents = []; return }
-    interventionGate.invalidate()
+    guard !maintenance else { return }
     Task {
-      await fixCoordinator?.cancel(
-        message: "History was explicitly cleared; remaining Fix steps were cancelled.")
+      guard !maintenance else { return }
+      await beginHistoryMaintenance()
       do {
         try await history?.clear()
+        await liveExperience.reload()
+        experience = await liveExperience.summary()
         timeline = []
         incidents = []
-        fixHistory = []; liveFixHistory = []
+        fixHistory = []; liveFixHistory = []; fixSession = nil
+        experienceMessage = "History cleared. Monitoring is paused; resume when ready."
       } catch { errorMessage = error.localizedDescription }
+      await finishHistoryMaintenance()
     }
   }
   func activityMonitor() {
@@ -330,7 +387,7 @@ final class AppModel: ObservableObject {
       settings.excludedPaths.append(process.path)
     }
   }
-  private func receiveFix(_ value: FixSession) {
+  private func receiveFix(_ value: FixSession) async {
     if let current = fixSession, (current.revision ?? 0) > (value.revision ?? 0) { return }
     fixSession = value
     if value.demo {
@@ -343,15 +400,21 @@ final class AppModel: ObservableObject {
       if !demo { fixHistory = liveFixHistory }
     }
     if value.approvedAction == .restartMonitoring && value.phase == .verifying { paused = false }
+    await (value.demo ? demoExperience : liveExperience).observeFix(value)
+    if value.demo == demo { experience = await analytics.summary() }
   }
   func beginFix(_ origin: FixOrigin = FixOrigin()) {
-    guard fixReady else { return }
-    Task { await fixCoordinator?.prepare(origin: origin, settings: settings) }
+    guard fixReady && !maintenance else { return }
+    Task {
+      await synchronizeEngineConfiguration()
+      await fixCoordinator?.prepare(origin: origin, settings: settings)
+    }
   }
   func approveFix(
     _ action: FixAction, sessionID: UUID, planID: UUID, forceConfirmed: Bool = false
   ) {
     guard let session = fixSession, session.id == sessionID,
+      !maintenance,
       session.phase == .awaitingApproval, session.plan?.id == planID
     else { return }
     Task {
@@ -360,9 +423,27 @@ final class AppModel: ObservableObject {
     }
   }
   func cancelFix() { invalidateFix("Cancelled by you. A request already sent cannot be undone.") }
-  private func invalidateFix(_ message: String) {
+  func invalidateFix(_ message: String) {
     interventionGate.invalidate()
     Task { await fixCoordinator?.cancel(message: message) }
+  }
+  func synchronizeEngineConfiguration() async {
+    await engine?.configure(settings, revision: configurationRevision)
+  }
+  func beginHistoryMaintenance() async {
+    maintenance = true; paused = true
+    invalidateFix("History maintenance invalidated pending approvals.")
+    await fixCoordinator?.cancel(message: "History maintenance cancelled remaining steps.")
+    await engine?.suspendForMaintenance()
+  }
+  func finishHistoryMaintenance() async {
+    await engine?.finishMaintenance(); paused = true; maintenance = false
+  }
+  func refreshRestoredHistory() async throws {
+    try await history?.recoverInterruptedFixes()
+    incidents = try await history?.incidents() ?? []
+    liveFixHistory = try await history?.fixSessions() ?? []
+    fixHistory = liveFixHistory; fixSession = nil; timeline = []
   }
 
 }

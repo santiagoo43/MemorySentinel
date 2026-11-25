@@ -19,6 +19,10 @@ struct MenuPopover: View {
         Spacer()
         RiskBadge(level: model.snapshot?.risk ?? .normal)
       }
+      HStack {
+        Text("Profile").font(.caption).foregroundStyle(.secondary); ProfilePicker()
+      }
+      SampleFreshness()
       if let s = model.snapshot {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
           Text(Format.bytes(s.monitoredBytes)).font(
@@ -53,6 +57,25 @@ struct MenuPopover: View {
         ProgressView("Reading system memory…").frame(height: 160)
       }
       FixButton().frame(maxWidth: .infinity, alignment: .leading)
+      HStack {
+        Button("Record now") { model.recordNow(showDetails: false) }.disabled(
+          model.paused || !model.experience.historyAvailable)
+        Spacer()
+        if let active = model.experience.sessions.first(where: { $0.status == .active }) {
+          Button("End session") { model.endSession() }.help(active.name)
+        } else {
+          Button("Start session…") {
+            model.showSessionComposer = true; model.showSection("Sessions")
+          }
+        }
+      }.font(.caption)
+      if let alert = model.experience.alerts.first {
+        Text(alert.evidence).font(.caption).foregroundStyle(.orange).lineLimit(3)
+      }
+      if model.experience.recordings.contains(where: { $0.status == .recording }) {
+        Label("Flight recording in progress", systemImage: "record.circle.fill").font(.caption2)
+          .foregroundStyle(.orange)
+      }
       Divider()
       Button {
         showDashboard()
@@ -80,7 +103,9 @@ struct MenuPopover: View {
           Image(systemName: "power")
         }.help("Quit MemorySentinel")
       }.buttonStyle(.borderless).foregroundStyle(.secondary)
-    }.padding(22).frame(width: 400).onAppear { model.openDashboard = { showDashboard() } }
+    }.padding(22).frame(width: 400).disabled(model.maintenance).onAppear {
+      model.openDashboard = { showDashboard() }
+    }
   }
   private func mini(_ title: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 5) {

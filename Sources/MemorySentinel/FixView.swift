@@ -314,82 +314,93 @@ struct FixView: View {
     }.padding(16).background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
   }
   private func results(_ result: FixResult, plan: FixPlan) -> some View {
-    Surface {
-      Text(result.outcome.title).font(.title3.bold()).foregroundStyle(
-        result.outcome == .solved ? .mint : .orange)
-      Text(result.message).font(.callout).padding(.top, 10)
-      if let replacement = model.fixSession?.replacement {
-        Text("Reopened instance: \(replacement.id)").font(.system(size: 11, design: .monospaced))
-          .textSelection(.enabled)
-      }
-      Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-        GridRow {
-          Text("Action completed"); Text(answer(result.actionSucceeded))
+    VStack(alignment: .leading, spacing: 16) {
+      Surface {
+        Text(result.outcome.title).font(.title3.bold()).foregroundStyle(
+          result.outcome == .solved ? .mint : .orange)
+        Text(result.message).font(.callout).padding(.top, 10)
+        if let replacement = model.fixSession?.replacement {
+          Text("Reopened instance: \(replacement.id)").font(.system(size: 11, design: .monospaced))
+            .textSelection(.enabled)
         }
-        GridRow {
-          Text("Target problem resolved"); Text(answer(result.targetResolved))
-        }
-        GridRow {
-          Text("System improved"); Text(answer(result.systemImproved))
-        }
-        GridRow {
-          Text("Pressure");
-          Text(
-            "\(plan.before.system.pressure.rawValue) → \(result.after?.system.pressure.rawValue ?? "unavailable")"
-          )
-        }
-        GridRow {
-          Text("Estimated used");
-          Text(
-            "\(Format.bytes(plan.before.system.used)) → \(Format.bytes(result.after?.system.used))")
-        }
-        GridRow {
-          Text("Estimated available");
-          Text(
-            "\(Format.bytes(plan.before.system.available)) → \(Format.bytes(result.after?.system.available))"
-          )
-        }
-        GridRow {
-          Text("Swap");
-          Text(
-            "\(Format.bytes(plan.before.system.swap)) → \(Format.bytes(result.after?.system.swap))")
-        }
-        GridRow {
-          Text("Swap growth");
-          Text(
-            "\(Format.growth(plan.before.swapGrowth)) → \(Format.growth(result.after?.swapGrowth))")
-        }
-        GridRow {
-          Text("Risk");
-          Text("\(plan.before.risk.title) → \(result.after?.risk.title ?? "Unavailable")")
-        }
-        GridRow {
-          Text("Target growth");
-          Text(
-            "\(Format.growth(plan.before.targetGrowth)) → \(Format.growth(result.after?.targetGrowth))"
-          )
-        }
-        GridRow {
-          Text("Target footprint");
-          Text(
-            "\(Format.bytes(plan.before.targetFootprint)) → \(result.after?.targetFootprint == nil ? "Exited / unavailable" : Format.bytes(result.after?.targetFootprint))"
-          )
-        }
-      }.font(.system(size: 11)).padding(.vertical, 16)
-      Text(
-        "\(result.samples) post-action samples. Swap need not fall immediately. Missing readings never prove recovery."
-      ).font(.caption).foregroundStyle(.secondary)
-      Text(result.nextStep).font(.callout).padding(.top, 12)
-      if !result.remaining.isEmpty {
-        Divider().padding(.vertical, 12); Text("Remaining related processes").font(.headline)
-        ForEach(result.remaining) { p in
-          HStack {
-            Text("\(p.name) · PID \(p.identity.pid)").font(.caption); Spacer();
-            Text(Format.bytes(p.footprint)).font(.caption);
-            Button("Review Fix") {
-              model.beginFix(FixOrigin(identity: p.identity, demoSource: plan.token.demo))
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+          GridRow {
+            Text("Action completed"); Text(answer(result.actionSucceeded))
+          }
+          GridRow {
+            Text("Target problem resolved"); Text(answer(result.targetResolved))
+          }
+          GridRow {
+            Text("System improved"); Text(answer(result.systemImproved))
+          }
+          GridRow {
+            Text("Pressure");
+            Text(
+              "\(plan.before.system.pressure.rawValue) → \(result.after?.system.pressure.rawValue ?? "unavailable")"
+            )
+          }
+          GridRow {
+            Text("Estimated used");
+            Text(
+              "\(Format.bytes(plan.before.system.used)) → \(Format.bytes(result.after?.system.used))"
+            )
+          }
+          GridRow {
+            Text("Estimated available");
+            Text(
+              "\(Format.bytes(plan.before.system.available)) → \(Format.bytes(result.after?.system.available))"
+            )
+          }
+          GridRow {
+            Text("Swap");
+            Text(
+              "\(Format.bytes(plan.before.system.swap)) → \(Format.bytes(result.after?.system.swap))"
+            )
+          }
+          GridRow {
+            Text("Swap growth");
+            Text(
+              "\(Format.growth(plan.before.swapGrowth)) → \(Format.growth(result.after?.swapGrowth))"
+            )
+          }
+          GridRow {
+            Text("Risk");
+            Text("\(plan.before.risk.title) → \(result.after?.risk.title ?? "Unavailable")")
+          }
+          GridRow {
+            Text("Target growth");
+            Text(
+              "\(Format.growth(plan.before.targetGrowth)) → \(Format.growth(result.after?.targetGrowth))"
+            )
+          }
+          GridRow {
+            Text("Target footprint");
+            Text(
+              "\(Format.bytes(plan.before.targetFootprint)) → \(result.after?.targetFootprint == nil ? "Exited / unavailable" : Format.bytes(result.after?.targetFootprint))"
+            )
+          }
+        }.font(.system(size: 11)).padding(.vertical, 16)
+        Text(
+          "\(result.samples) post-action samples. Swap need not fall immediately. Missing readings never prove recovery."
+        ).font(.caption).foregroundStyle(.secondary)
+        Text(result.nextStep).font(.callout).padding(.top, 12)
+        if !result.remaining.isEmpty {
+          Divider().padding(.vertical, 12); Text("Remaining related processes").font(.headline)
+          ForEach(result.remaining) { p in
+            HStack {
+              Text("\(p.name) · PID \(p.identity.pid)").font(.caption); Spacer();
+              Text(Format.bytes(p.footprint)).font(.caption);
+              Button("Review Fix") {
+                model.beginFix(FixOrigin(identity: p.identity, demoSource: plan.token.demo))
+              }
             }
           }
+        }
+      }
+      if let id = model.fixSession?.id {
+        FixFollowupPanel(fixID: id)
+        if let context = model.experience.followups.first(where: { $0.id == id }) {
+          PastFixEvidenceView(context: context)
         }
       }
     }
@@ -403,6 +414,7 @@ struct FixHistoryDetail: View {
   @EnvironmentObject var model: AppModel
   @Environment(\.dismiss) var dismiss
   let session: FixSession
+  @State private var report = false
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
@@ -418,6 +430,8 @@ struct FixHistoryDetail: View {
         }
         Text(session.result?.outcome.title ?? session.phase.rawValue.capitalized).font(
           .title3.bold())
+        Button("Report preview…") { report = true }
+        FixFollowupPanel(fixID: session.id)
         Text("Session \(session.id.uuidString)").font(.system(size: 10, design: .monospaced))
         if let incident = session.origin.incidentID {
           Text("Original incident: \(incident.uuidString)").font(.caption)
@@ -499,5 +513,8 @@ struct FixHistoryDetail: View {
           title: "Assess current state…")
       }.padding(28)
     }.frame(width: 760, height: 640)
+      .sheet(isPresented: $report) {
+        ReportPreview(request: .fix(session)).environmentObject(model)
+      }
   }
 }

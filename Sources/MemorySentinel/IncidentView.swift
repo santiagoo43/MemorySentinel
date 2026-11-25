@@ -1,3 +1,4 @@
+import AppKit
 import SentinelCore
 import SwiftUI
 
@@ -6,6 +7,7 @@ struct IncidentView: View {
   @State private var selectedFix: FixSession?
   @State private var selected: Incident?
   @State private var context: [Snapshot] = []
+  @State private var exportWindow: NSWindow?
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
@@ -15,10 +17,12 @@ struct IncidentView: View {
             subtitle: "Warnings and critical events · Local evidence with process identity")
           Spacer()
           Menu("Export") {
-            Button("JSON diagnostics") { model.export(csv: false) }
-            Button("CSV minute timeline") { model.export(csv: true) }
-          }.disabled(model.demo)
+            Button("JSON diagnostics") { model.export(csv: false, window: exportWindow) }
+            Button("CSV minute timeline") { model.export(csv: true, window: exportWindow) }
+          }.disabled(model.demo || model.exportingDiagnostics)
         }
+        FixFollowupPanel()
+        PastFixEvidenceView()
         if !model.fixHistory.isEmpty {
           SectionTitle(
             title: "Fix activity",
@@ -98,7 +102,10 @@ struct IncidentView: View {
           }.buttonStyle(.plain)
         }
       }.padding(28)
-    }.sheet(item: $selectedFix) { session in
+    }.background(
+      SaveWindowProbe { exportWindow = $0 }.frame(width: 0, height: 0).accessibilityHidden(true)
+    )
+    .sheet(item: $selectedFix) { session in
       FixHistoryDetail(session: session).environmentObject(model)
     }
     .sheet(item: $selected) { event in

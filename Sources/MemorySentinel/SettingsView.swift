@@ -1,3 +1,4 @@
+import AppKit
 import SentinelCore
 import ServiceManagement
 import SwiftUI
@@ -8,6 +9,7 @@ struct SettingsView: View {
   @State private var value = ""
   @State private var kind: WatchRule.Kind = .executable
   @State private var clearConfirm = false
+  @State private var exportWindow: NSWindow?
   var body: some View {
     TabView {
       Form {
@@ -140,9 +142,9 @@ struct SettingsView: View {
         }
         Section("Diagnostics") {
           HStack {
-            Button("Export JSON") { model.export(csv: false) }
-            Button("Export CSV") { model.export(csv: true) }
-          }
+            Button("Export JSON") { model.export(csv: false, window: exportWindow) }
+            Button("Export CSV") { model.export(csv: true, window: exportWindow) }
+          }.disabled(model.demo || model.exportingDiagnostics)
           Button("Show local data folder") { NSWorkspace.shared.open(LocalPaths.directory) }
           Button("Delete all history…", role: .destructive) { clearConfirm = true }
           Text(
@@ -151,6 +153,9 @@ struct SettingsView: View {
         }
       }.formStyle(.grouped).tabItem { Label("Data", systemImage: "externaldrive") }
     }.padding(10).frame(width: 650, height: 620)
+      .background(
+        SaveWindowProbe { exportWindow = $0 }.frame(width: 0, height: 0).accessibilityHidden(true)
+      )
       .onAppear {
         Task { await model.refreshNotificationStatus() }; model.refreshLoginStatus()
       }
