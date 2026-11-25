@@ -4,6 +4,8 @@
 
 The prebuilt release requires an Apple Silicon Mac and macOS 14 or later.
 
+Version 1.2.0 includes profiles, flight recordings, work sessions and reports. See [the workflow guide](WORKFLOWS.md) for usage and observation limits.
+
 1. Open the [latest release](https://github.com/santiagoo43/MemorySentinel/releases/latest).
 2. Download both `MemorySentinel-macOS-arm64.zip` and `SHA256SUMS` from that release.
 3. With both files in the same folder, run:
@@ -41,10 +43,12 @@ If code signing reports resource forks or Finder information in a cloud-synced c
 
 **Settings → Data → Delete all history…** asks for confirmation before clearing local history. It does not remove your settings, projects, downloads or exports.
 
+On the first 1.2 launch, history migrates transactionally to schema 2 after a consistent `history.pre-v2.sqlite` backup. Updating legacy settings first preserves `settings.pre-v2.json`. Keep enough free storage for both the live data and recovery copies. **Profiles → Storage and recovery** provides a consistent recovery snapshot and pre-migration restore controls. Restoring history or clearing it drains sampling first and leaves monitoring paused; resume it when ready. The database being replaced is preserved as `history.before-restore.sqlite`.
+
 ## Uninstall
 
 1. Turn off **Settings → General → Launch at login** if it was enabled.
 2. Quit MemorySentinel and move the app to Trash.
 3. If you also want to remove settings and history, remove `~/Library/Application Support/MemorySentinel/` after quitting. Keep a backup first if needed. Remove exports separately.
 
-The app does not delete its data folder automatically on uninstall.
+The app does not delete its data folder automatically on uninstall. Backups or exports kept outside that folder also remain; review those separately if reclaiming disk space.
