@@ -20,11 +20,32 @@ public struct SettingsStore: Sendable {
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
+    let backup = url.deletingLastPathComponent().appendingPathComponent("settings.pre-v2.json")
+    if let existing = try? Data(contentsOf: url),
+      let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any],
+      object["profiles"] == nil || object["profiles"] is NSNull,
+      !FileManager.default.fileExists(atPath: backup.path)
+    {
+      try existing.write(to: backup, options: .atomic)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+    }
     try JSONEncoder().encode(settings.validated()).write(to: url, options: .atomic)
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
   }
+  public func restorePreV2Backup() throws -> Settings {
+    let folder = url.deletingLastPathComponent()
+    let data = try Data(contentsOf: folder.appendingPathComponent("settings.pre-v2.json"))
+    let restored = try JSONDecoder().decode(Settings.self, from: data).validated()
+    if let current = try? Data(contentsOf: url) {
+      let recovery = folder.appendingPathComponent("settings.before-restore.json")
+      try current.write(to: recovery, options: .atomic)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: recovery.path)
+    }
+    try save(restored)
+    return restored
+  }
 }
-private final class SQLiteHandle: @unchecked Sendable {
+final class SQLiteHandle: @unchecked Sendable {
   var pointer: OpaquePointer?
   init(_ path: String) throws {
     if sqlite3_open_v2(
@@ -46,12 +67,14 @@ public enum HistoryError: LocalizedError {
   }
 }
 public actor HistoryStore {
-  private let connection: SQLiteHandle
+  let connection: SQLiteHandle
+  public nonisolated let directory: URL
   public let recoveryMessage: String?
   private var writes = 0
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
   public init(directory: URL = LocalPaths.directory) throws {
+    self.directory = directory
     try FileManager.default.createDirectory(
       at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let url = directory.appendingPathComponent("history.sqlite")
@@ -77,6 +100,11 @@ public actor HistoryStore {
       recover = "Unreadable history was quarantined locally. A fresh history database is active."
     }
     connection = handle
+    guard try ExperienceMigration.version(handle) <= 2 else {
+      throw HistoryError.database(
+        "This history was created by a newer app. Open a compatible version; it has not been replaced."
+      )
+    }
     recoveryMessage = recover
     let schema = """
       PRAGMA journal_mode=WAL;
@@ -94,9 +122,10 @@ public actor HistoryStore {
     guard sqlite3_exec(handle.pointer, schema, nil, nil, nil) == SQLITE_OK else {
       throw HistoryError.database("Cannot initialize history schema")
     }
+    try ExperienceMigration.prepare(handle, directory: directory)
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
   }
-  private func execute(_ sql: String, values: [String] = []) throws {
+  func execute(_ sql: String, values: [String] = []) throws {
     var s: OpaquePointer?
     guard sqlite3_prepare_v2(connection.pointer, sql, -1, &s, nil) == SQLITE_OK else {
       throw error()
@@ -115,7 +144,7 @@ public actor HistoryStore {
   private func error() -> HistoryError {
     .database(String(cString: sqlite3_errmsg(connection.pointer)))
   }
-  private func rows(_ sql: String) throws -> [String] {
+  func rows(_ sql: String) throws -> [String] {
     var s: OpaquePointer?
     guard sqlite3_prepare_v2(connection.pointer, sql, -1, &s, nil) == SQLITE_OK else {
       throw error()
@@ -130,7 +159,7 @@ public actor HistoryStore {
     }
     return result
   }
-  private func json<T: Encodable>(_ value: T) throws -> String {
+  func json<T: Encodable>(_ value: T) throws -> String {
     String(decoding: try encoder.encode(value), as: UTF8.self)
   }
   public func append(_ snapshot: Snapshot, incidents: [Incident], settings: Settings) throws {
@@ -275,6 +304,8 @@ public actor HistoryStore {
     try execute("DELETE FROM minutes")
     try execute("DELETE FROM incidents")
     try execute("DELETE FROM fix_sessions")
+    try execute("DELETE FROM experience_frames")
+    try execute("DELETE FROM experience_items")
     try execute("PRAGMA wal_checkpoint(TRUNCATE)")
     try execute("VACUUM")
   }

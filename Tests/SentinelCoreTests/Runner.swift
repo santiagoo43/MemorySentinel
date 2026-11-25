@@ -53,7 +53,82 @@ import Foundation
     let t = CoreTests()
     let f = FixTests()
     let native = NativeFixTests()
+    let experience = ExperienceTests()
     let tests: [(String, () async throws -> Void)] = [
+      (
+        "Experience legacy settings and profiles",
+        { try experience.testLegacySettingsAndProfiles() }
+      ),
+      (
+        "Experience application attribution and accounting",
+        { experience.testAttributionVersionAndIncompleteAccounting() }
+      ),
+      ("Experience baseline and forecast quality", { experience.testBaselineAndForecastQuality() }),
+      (
+        "Experience recording windows and interruption",
+        { try await experience.testRecordingWindowsMergeAndInterruption() }
+      ),
+      (
+        "Experience recording deadlines and incomplete evidence",
+        { try await experience.testRecordingDeadlineAndIncompleteEvidence() }
+      ),
+      (
+        "Experience pretrigger markers and frozen reports",
+        { try await experience.testPretriggerMarkersSurviveRestartAndFrozenReport() }
+      ),
+      (
+        "Experience unknown and replacement peaks",
+        { try await experience.testSessionUnknownAndReplacementPeaks() }
+      ),
+      (
+        "Experience maintenance drains inflight sample",
+        { try await experience.testMaintenanceDrainsAnInflightSample() }
+      ),
+      (
+        "Experience sessions coverage and restart",
+        { try await experience.testSessionCoverageComparisonAndRestart() }
+      ),
+      (
+        "Experience snooze and learning exclusions",
+        { try await experience.testSnoozeAndLearningExclusions() }
+      ),
+      ("Experience migration and restore", { try await experience.testMigrationAndRestore() }),
+      (
+        "Experience atomic writes and revision ordering",
+        { try await experience.testExperienceWriteRollbackAndRevisionOrdering() }
+      ),
+      (
+        "Experience failed migration preserves data",
+        { try experience.testMigrationFailurePreservesLegacyData() }
+      ),
+      (
+        "Experience unapproved Fix cache stays bounded",
+        { try await experience.testUnapprovedFixRevisionCacheIsBounded() }
+      ),
+      (
+        "Experience quotas and series peaks",
+        { try await experience.testStorageQuotaAndSeriesPeaks() }
+      ),
+      (
+        "Experience five-minute followup",
+        { try await experience.testFiveMinuteFollowupAndImmutableResult() }
+      ),
+      (
+        "Experience shared reports and escaping",
+        { try await experience.testSharedReportsAndEscaping() }
+      ),
+      (
+        "Experience demo and maintenance",
+        { try await experience.testDemoSeedAndMaintenanceBarrier() }
+      ),
+      (
+        "Experience learned profile and version isolation",
+        { await experience.testLearnedRangeProfileAndVersionIsolation() }
+      ),
+      (
+        "Experience followup accounting and unreadable identity",
+        { try await experience.testFollowupKeepsProcessAndGroupAccountingSeparate() }
+      ),
       ("generic runtime evidence", { t.testGenericRuntimeRequiresEvidence() }),
       ("bundle ancestry and exclusions", { t.testBundleAndAncestryAndExcludedProcess() }),
       ("parent start time and PGID", { t.testNewerParentAndGroupDoNotEstablishAncestry() }),

@@ -232,7 +232,9 @@ public struct Analyzer: Sendable {
               date: raw.date, level: p.risk, identity: p.identity, processName: p.name,
               footprint: p.footprint, growth: p.growth, reason: why.joined(separator: ". "),
               demo: demo,
-              system: raw.system))
+              system: raw.system,
+              problem: (p.growth ?? 0) > settings.growthMiB * MiB
+                ? .sustainedGrowth : .highFootprint))
         }
       }
     }
@@ -313,7 +315,15 @@ public struct Analyzer: Sendable {
         Incident(
           date: raw.date, level: level, identity: nil, processName: nil, footprint: monitored,
           growth: nil, reason: reasons.prefix(4).joined(separator: " "), demo: demo,
-          system: raw.system), at: 0)
+          system: raw.system,
+          problem: raw.system.pressure == .warning || raw.system.pressure == .critical
+            ? .systemPressure
+            : (swapGrowth ?? 0) > settings.swapGrowthMiB * MiB
+              ? .swapGrowth
+              : (raw.system.diskFree ?? .infinity) < 5 * GiB
+                ? .lowDisk
+                : raw.system.pressure == .unavailable ? .unavailableMetrics : .highFootprint), at: 0
+      )
     }
     processes.sort { ($0.footprint ?? -1) > ($1.footprint ?? -1) }
     return Evaluation(

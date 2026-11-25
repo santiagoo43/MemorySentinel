@@ -14,13 +14,17 @@ public enum Classifier {
       }) {
         records[i].group = rule.label
         records[i].evidence = "Custom \(rule.kind.rawValue) rule: \(rule.value)"
-      } else if p.bundleID == "com.openai.chat" {
+      } else if p.bundleID == "com.openai.chat"
+        && !(settings.disabledBuiltIns ?? []).contains("ChatGPT")
+      {
         records[i].group = "ChatGPT"
         records[i].evidence = "Bundle ID com.openai.chat"
-      } else if p.bundleID == "com.openai.codex" {
+      } else if p.bundleID == "com.openai.codex"
+        && !(settings.disabledBuiltIns ?? []).contains("Codex")
+      {
         records[i].group = "Codex"
         records[i].evidence = "Bundle ID com.openai.codex"
-      } else if isCodexCLI(p.path) {
+      } else if isCodexCLI(p.path) && !(settings.disabledBuiltIns ?? []).contains("Codex CLI") {
         records[i].group = "Codex CLI"
         records[i].evidence = "Codex distribution executable path"
       } else if p.name.lowercased().contains("codex") || p.name.lowercased().contains("chatgpt") {
@@ -90,7 +94,7 @@ public struct LiveCollector: Sendable {
     var unreadable: [Int32] = []
     result.reserveCapacity(max(0, count))
     // Bundle lookups are cached per sample; no argument or environment inspection.
-    var bundles: [String: String] = [:]
+    var bundles: [String: (String?, String?)] = [:]
     for pid in ids.prefix(max(0, min(count, ids.count))) where pid > 0 {
       if let record = Self.readProcess(pid, bundles: &bundles) {
         result.append(record)
@@ -105,10 +109,12 @@ public struct LiveCollector: Sendable {
       unreadablePIDs: unreadable)
   }
   public static func readProcess(_ pid: Int32) -> ProcessRecord? {
-    var bundles: [String: String] = [:]
+    var bundles: [String: (String?, String?)] = [:]
     return readProcess(pid, bundles: &bundles)
   }
-  private static func readProcess(_ pid: Int32, bundles: inout [String: String]) -> ProcessRecord? {
+  private static func readProcess(_ pid: Int32, bundles: inout [String: (String?, String?)])
+    -> ProcessRecord?
+  {
     var p = MSProcess(); guard ms_process(pid, &p) != 0 else { return nil }
     let name = withUnsafePointer(to: &p.name) {
       $0.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) }
@@ -117,20 +123,25 @@ public struct LiveCollector: Sendable {
       $0.withMemoryRebound(to: CChar.self, capacity: 4096) { String(cString: $0) }
     }
     var bundleID: String?
+    var version: String?
     if let range = path.range(of: ".app/") {
       let root = String(path[..<range.lowerBound]) + ".app"
       if let cached = bundles[root] {
-        bundleID = cached.isEmpty ? nil : cached
+        bundleID = cached.0; version = cached.1
       } else {
-        let value = Bundle(path: root)?.bundleIdentifier; bundles[root] = value ?? "";
-        bundleID = value
+        let bundle = Bundle(path: root)
+        bundleID = bundle?.bundleIdentifier
+        let short = bundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = bundle?.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        version = short.map { $0 + (build.map { " (\($0))" } ?? "") } ?? build
+        bundles[root] = (bundleID, version)
       }
     }
     return ProcessRecord(
       identity: .init(pid: pid, seconds: p.start_sec, microseconds: p.start_usec), ppid: p.ppid,
       pgid: p.pgid, uid: p.uid, name: name, path: path, bundleID: bundleID,
       footprint: p.memory_valid != 0 ? Double(p.footprint) : nil,
-      rss: p.memory_valid != 0 ? Double(p.rss) : nil)
+      rss: p.memory_valid != 0 ? Double(p.rss) : nil, appVersion: version)
   }
   public static func validateTarget(_ record: ProcessRecord) throws {
     let code = record.path.withCString {

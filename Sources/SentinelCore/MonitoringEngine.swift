@@ -5,12 +5,19 @@ public struct EngineUpdate: Sendable {
   public var incidents: [Incident]
   public var seed: [TimelinePoint]?
   public var error: String?
+  public var experience: ExperienceSummary? = nil
+  public var configuration: String? = nil
 }
 public actor MonitoringEngine {
   private var settings: Settings
   private var analyzer = Analyzer()
   private let collector = LiveCollector()
   private let history: HistoryStore?
+  private let experience: ExperienceCoordinator?
+  private let demoExperience: ExperienceCoordinator?
+  private var seedingID: UUID?
+  private var lastConfigurationRevision: UInt64 = 0
+  private var maintenance = false
   private var loop: Task<Void, Never>?
   private var monitoringActivity: (any NSObjectProtocol)?
   private var latest: Snapshot?
@@ -30,15 +37,17 @@ public actor MonitoringEngine {
   private var generation = 0
   private let sink: @Sendable (EngineUpdate) async -> Void
   public init(
-    settings: Settings, history: HistoryStore?,
+    settings: Settings, history: HistoryStore?, experience: ExperienceCoordinator? = nil,
+    demoExperience: ExperienceCoordinator? = nil,
     sink: @escaping @Sendable (EngineUpdate) async -> Void
   ) {
     self.settings = settings
     self.history = history
+    self.experience = experience; self.demoExperience = demoExperience
     self.sink = sink
   }
   public func start() {
-    guard loop == nil else { return }
+    guard loop == nil && !maintenance else { return }
     let id = UUID(); loopID = id
     // The user requested a continuous watchdog, including when all windows are closed.
     // Allow system/display sleep while preventing App Nap from deferring its sampling loop.
@@ -69,10 +78,12 @@ public actor MonitoringEngine {
     }
   }
   public func freshSnapshot() async throws -> Snapshot {
+    guard seedingID == nil && !maintenance else { throw FixError.busy }
     while sampling {
       guard waiters.count < 8 else { throw FixError.busy }
       await withCheckedContinuation { waiters.append($0) }
       try Task.checkCancellation()
+      guard !maintenance else { throw FixError.busy }
     }
     // Claim synchronously before any actor suspension; no scheduled tick can steal this request.
     sampling = true
@@ -108,9 +119,25 @@ public actor MonitoringEngine {
     loop = nil
     endMonitoringActivity()
   }
-  public func configure(_ value: Settings) {
+  public func suspendForMaintenance() async {
+    maintenance = true; paused = true; stop()
+    while sampling { await withCheckedContinuation { waiters.append($0) } }
+    await experience?.interrupt(reason: "History maintenance interrupted observation.")
+  }
+  public func finishMaintenance() {
+    maintenance = false; paused = true; start()
+  }
+  public func configure(_ value: Settings, revision: UInt64? = nil) {
+    if let revision {
+      guard revision > lastConfigurationRevision else { return }
+      lastConfigurationRevision = revision
+    }
     let valid = value.validated()
-    if valid.watchRules != settings.watchRules || valid.excludedPaths != settings.excludedPaths {
+    if valid.analysisSignature != settings.analysisSignature { generation += 1; latest = nil }
+    if valid.watchRules != settings.watchRules || valid.excludedPaths != settings.excludedPaths
+      || valid.activeProfileID != settings.activeProfileID
+      || valid.disabledBuiltIns != settings.disabledBuiltIns
+    {
       analyzer = Analyzer()
     }
     settings = valid
@@ -139,7 +166,17 @@ public actor MonitoringEngine {
     }
   }
   public func mode(demo value: Bool, scenario: SimulationScenario) async {
+    guard !maintenance else { return }
     generation += 1
+    let modeGeneration = generation, seedID = UUID()
+    seedingID = seedID
+    defer { if seedingID == seedID { seedingID = nil } }
+    if value && !demo {
+      await experience?.interrupt(reason: "Simulation Mode interrupted live observation.")
+    }
+    guard generation == modeGeneration else { return }
+    if value { await demoExperience?.resetDemo() }
+    guard generation == modeGeneration else { return }
     demo = value
     forcedNext = nil
     demoRemoved = []; demoReplacement = nil; demoRecovered = false; latest = nil
@@ -151,30 +188,39 @@ public actor MonitoringEngine {
       var points: [TimelinePoint] = []
       var result: Evaluation?
       var events: [Incident] = []
+      var experienceSummary: ExperienceSummary?
+      let uptimeOrigin = ProcessInfo.processInfo.systemUptime - 895
       for i in 0..<180 {
+        guard generation == modeGeneration else { return }
         let raw = Simulator().sample(step: i, scenario: scenario, origin: origin)
         result = analyzer.evaluate(raw, settings: settings, demo: true)
         points.append(result!.snapshot.point)
         events.append(contentsOf: result!.incidents)
+        experienceSummary = await demoExperience?.ingest(
+          snapshot: result!.snapshot,
+          incidents: result!.incidents, settings: settings, uptime: uptimeOrigin + Double(i) * 5)
       }
       step = 180
+      guard generation == modeGeneration else { return }
       if let result {
         await sink(
           EngineUpdate(
             snapshot: result.snapshot, incidents: Array(events.suffix(300)), seed: points,
-            error: nil))
+            error: nil, experience: experienceSummary, configuration: settings.analysisSignature))
       }
     } else {
+      if seedingID == seedID { seedingID = nil }
       await sample()
     }
   }
   public func sample(force: Bool = false) async {
-    guard (!paused || force) && !sampling else { return }
+    guard (!paused || force) && !sampling && seedingID == nil && !maintenance else { return }
     sampling = true
     _ = await collectSample()
   }
   private func collectSample() async -> Snapshot? {
     let activeGeneration = generation
+    let sampleSettings = settings
 
     var raw: RawSample
     if demo {
@@ -211,16 +257,24 @@ public actor MonitoringEngine {
         raw.system.pressure = eventPressure
       }
     }
-    let result = analyzer.evaluate(raw, settings: settings, demo: demo)
+    let result = analyzer.evaluate(raw, settings: sampleSettings, demo: demo)
     var error: String?
     do {
-      try await history?.append(result.snapshot, incidents: result.incidents, settings: settings)
+      try await history?.append(
+        result.snapshot, incidents: result.incidents, settings: sampleSettings)
     } catch let issue { error = issue.localizedDescription }
+    var experienceSummary: ExperienceSummary?
+    if activeGeneration == generation {
+      experienceSummary = await (result.snapshot.demo ? demoExperience : experience)?.ingest(
+        snapshot: result.snapshot, incidents: result.incidents, settings: sampleSettings,
+        uptime: ProcessInfo.processInfo.systemUptime)
+    }
     if activeGeneration == generation {
       latest = result.snapshot
       await sink(
         EngineUpdate(
-          snapshot: result.snapshot, incidents: result.incidents, seed: nil, error: error))
+          snapshot: result.snapshot, incidents: result.incidents, seed: nil, error: error,
+          experience: experienceSummary, configuration: sampleSettings.analysisSignature))
     }
     sampling = false
     let waiting = waiters; waiters = []; for waiter in waiting { waiter.resume() }

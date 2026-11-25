@@ -104,6 +104,7 @@ final class CoreTests {
         XCTAssertNil(last.monitoredBytes)
         XCTAssertEqual(last.system.pressure, .unavailable)
       case .suddenJump: XCTAssertTrue(results[12].snapshot.reasons.contains { $0.contains("jump") })
+      case .budgetApproach: XCTAssertGreaterThan(last.processes[0].growth ?? 0, 0)
       }
     }
   }

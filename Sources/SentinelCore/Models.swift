@@ -53,6 +53,7 @@ public struct ProcessRecord: Codable, Sendable, Identifiable {
   public var name: String
   public var path: String
   public var bundleID: String?
+  public var appVersion: String? = nil
   public var footprint: Double?
   public var rss: Double?
   public var group: String?
@@ -66,7 +67,8 @@ public struct ProcessRecord: Codable, Sendable, Identifiable {
     identity: ProcessIdentity, ppid: Int32 = 1, pgid: Int32 = 0, uid: UInt32 = 501, name: String,
     path: String, bundleID: String? = nil, footprint: Double? = nil, rss: Double? = nil,
     group: String? = nil, evidence: String? = nil, uncertain: Bool = false, peak: Double = 0,
-    growth: Double? = nil, observedSince: Date = Date(), risk: RiskLevel = .normal
+    growth: Double? = nil, observedSince: Date = Date(), risk: RiskLevel = .normal,
+    appVersion: String? = nil
   ) {
     self.identity = identity
     self.ppid = ppid
@@ -75,6 +77,7 @@ public struct ProcessRecord: Codable, Sendable, Identifiable {
     self.name = name
     self.path = path
     self.bundleID = bundleID
+    self.appVersion = appVersion
     self.footprint = footprint
     self.rss = rss
     self.group = group
@@ -116,7 +119,37 @@ public struct Settings: Codable, Equatable, Sendable {
   public var watchRules: [WatchRule] = []
   public var excludedPaths: [String] = []
   public var onboardingComplete = false
+  // Optional additions keep settings written by 1.1.x decodable without resetting user values.
+  public var profiles: [WorkProfile]? = nil
+  public var activeProfileID: UUID? = nil
+  public var disabledBuiltIns: [String]? = nil
   public init() {}
+  public var activeProfile: WorkProfile {
+    let values = profiles.flatMap { $0.isEmpty ? nil : $0 } ?? WorkProfile.defaults(settings: self)
+    return values.first { $0.id == activeProfileID } ?? values[0]
+  }
+  public var analysisSignature: String {
+    struct BudgetContext: Encodable { var scope: String; var target: String; var bytes: Double }
+    struct Context: Encodable {
+      var interval: Int; var warning: Double; var critical: Double; var growth: Double
+      var swap: Double; var profileID: UUID; var budgets: [BudgetContext]
+      var rules: [WatchRule]; var excluded: [String]; var disabled: [String];
+    }
+    let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+    let data =
+      (try? encoder.encode(
+        Context(
+          interval: interval, warning: warningFraction,
+          critical: criticalFraction, growth: growthMiB, swap: swapGrowthMiB,
+          profileID: activeProfile.id,
+          budgets: activeProfile.budgets.map {
+            BudgetContext(scope: $0.scope.rawValue, target: $0.target, bytes: $0.bytes)
+          },
+          rules: watchRules, excluded: excludedPaths, disabled: disabledBuiltIns ?? []))) ?? Data()
+    // A stable configuration label, not a security hash.
+    return String(
+      data.reduce(UInt64(14695981039346656037)) { ($0 ^ UInt64($1)) &* 1099511628211 }, radix: 16)
+  }
   public func validated() -> Self {
     var s = self
     if ![2, 5, 10, 15, 30].contains(s.interval) { s.interval = 5 }
@@ -132,6 +165,16 @@ public struct Settings: Codable, Equatable, Sendable {
     s.incidentDays = min(90, max(1, s.incidentDays))
     s.watchRules = Array(s.watchRules.prefix(64))
     s.excludedPaths = Array(s.excludedPaths.prefix(128))
+    var seen = Set<UUID>()
+    s.profiles = Array(
+      (s.profiles ?? WorkProfile.defaults(settings: s)).filter {
+        seen.insert($0.id).inserted
+      }.prefix(12)
+    ).map { $0.validated() }
+    if s.profiles?.isEmpty != false { s.profiles = WorkProfile.defaults(settings: s) }
+    if !s.profiles!.contains(where: { $0.id == s.activeProfileID }) {
+      s.activeProfileID = s.profiles!.first!.id
+    }
     return s
   }
 }
@@ -146,6 +189,7 @@ public struct Incident: Codable, Sendable, Identifiable {
   public var reason: String
   public var demo: Bool? = nil
   public var system: SystemMetrics
+  public var problem: ProblemKind? = nil
 }
 public struct TimelinePoint: Codable, Sendable, Identifiable {
   public var date: Date
