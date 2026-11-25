@@ -168,6 +168,8 @@ import Foundation
             !$0.isTerminated
               && $0.bundleURL?.resolvingSymlinksInPath().path == application.bundlePath
               && $0.executableURL?.resolvingSymlinksInPath().path == application.executablePath
+              && Self.verifiedReplacement(
+                LiveCollector.readProcess($0.processIdentifier), target: target) != nil
           }) {
             completion.finish(.success(existing.processIdentifier)); return
           }
@@ -188,11 +190,43 @@ import Foundation
         }
       } catch { completion.finish(.failure(error)) }
     }
-    guard let current = LiveCollector.readProcess(result),
-      normalized(current.path) == application.executablePath, current.uid == target.process.uid,
-      current.identity != target.process.identity
-    else { throw FixError.unavailable("The reopened instance could not be verified.") }
-    return current.identity
+    // AppKit lifecycle properties can lag until a common-mode main-run-loop turn.
+    // Only a fresh kernel identity can establish the replacement; no second open is sent.
+    for _ in 0..<60 {
+      try Task.checkCancellation()
+      guard gate.current() == token, !token.demo else {
+        throw FixError.invalidated("The reopen approval changed during identity verification.")
+      }
+      guard try applicationIdentity(bundlePath: application.bundlePath) == application else {
+        throw FixError.invalidated("The application changed while it was being reopened.")
+      }
+      if let identity = Self.verifiedReplacement(LiveCollector.readProcess(result), target: target)
+      {
+        return identity
+      }
+      for app in NSRunningApplication.runningApplications(
+        withBundleIdentifier: application.bundleID)
+      where app.bundleURL?.resolvingSymlinksInPath().path == application.bundlePath {
+        if let identity = Self.verifiedReplacement(
+          LiveCollector.readProcess(app.processIdentifier), target: target)
+        {
+          return identity
+        }
+      }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    throw FixError.unavailable(
+      "The reopened instance could not be verified. No additional launch was requested.")
+  }
+  public nonisolated static func verifiedReplacement(_ record: ProcessRecord?, target: FixTarget)
+    -> ProcessIdentity?
+  {
+    guard let record, let application = target.application,
+      record.identity != target.process.identity,
+      record.uid == target.process.uid,
+      URL(fileURLWithPath: record.path).resolvingSymlinksInPath().path == application.executablePath
+    else { return nil }
+    return record.identity
   }
   private func normalized(_ path: String) -> String {
     URL(fileURLWithPath: path).resolvingSymlinksInPath().path

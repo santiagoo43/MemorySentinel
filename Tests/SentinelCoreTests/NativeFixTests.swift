@@ -123,6 +123,16 @@ import SentinelCore
     let bundle = try buildFixture(dir)
     var owned = Set<ProcessIdentity>()
     defer {
+      // A failed reopen can create a fixture before returning its identity to this test.
+      for app in NSWorkspace.shared.runningApplications
+      where app.bundleURL?.resolvingSymlinksInPath() == bundle {
+        if let p = LiveCollector.readProcess(app.processIdentifier),
+          URL(fileURLWithPath: p.path).resolvingSymlinksInPath().path.hasPrefix(
+            dir.resolvingSymlinksInPath().path + "/")
+        {
+          owned.insert(p.identity)
+        }
+      }
       for identity in owned {
         if let p = LiveCollector.readProcess(identity.pid), p.identity == identity,
           URL(fileURLWithPath: p.path).resolvingSymlinksInPath().path.hasPrefix(
@@ -174,6 +184,11 @@ import SentinelCore
     let replacement = try await service.relaunch(target: planTarget, token: gate.current());
     owned.insert(replacement)
     XCTAssertTrue(replacement != original)
+    XCTAssertNil(ProcessActionService.verifiedReplacement(planTarget.process, target: planTarget))
+    var impostor = planTarget.process; impostor.identity.seconds += 1; impostor.uid += 1
+    XCTAssertNil(ProcessActionService.verifiedReplacement(impostor, target: planTarget))
+    impostor.uid = planTarget.process.uid; impostor.path = "/different/executable"
+    XCTAssertNil(ProcessActionService.verifiedReplacement(impostor, target: planTarget))
     for _ in 0..<100 {
       if FileManager.default.fileExists(
         atPath: dir.appendingPathComponent("ready-\(replacement.pid)").path)
