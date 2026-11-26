@@ -7,7 +7,8 @@ private actor PolicyFixtureRuntime: FixRuntime {
   let intervention: InterventionGate
   let policyGate: AutomationGate
   var effects = 0
-  var delay = 0.0
+  private var holdEffect = false
+  private var effectRelease: CheckedContinuation<Void, Never>?
   init(sample: Snapshot, intervention: InterventionGate, policyGate: AutomationGate) {
     self.sample = sample; self.intervention = intervention; self.policyGate = policyGate
   }
@@ -22,7 +23,9 @@ private actor PolicyFixtureRuntime: FixRuntime {
     action: FixAction, target: FixTarget?, token: InterventionToken,
     forceConfirmed: Bool, plan: FixPlan
   ) async throws {
-    if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+    if holdEffect {
+      await withCheckedContinuation { effectRelease = $0 }
+    }
     if let policy = plan.automation, let target {
       guard action == policy.rule.operation.action, !forceConfirmed, action != .forceQuit else {
         throw FixError.refused("Policy cannot Force Quit")
@@ -43,7 +46,12 @@ private actor PolicyFixtureRuntime: FixRuntime {
   func relaunch(target: FixTarget, token: InterventionToken) throws -> ProcessIdentity {
     throw FixError.refused("Manual relaunch was not requested")
   }
-  func setDelay(_ seconds: Double) { delay = seconds }
+  func holdNextEffect() { holdEffect = true }
+  func isWaitingForEffect() -> Bool { effectRelease != nil }
+  func releaseEffect() {
+    holdEffect = false
+    effectRelease?.resume(); effectRelease = nil
+  }
   func effectCount() -> Int { effects }
 }
 
@@ -132,10 +140,10 @@ final class ReadinessTestServer: @unchecked Sendable {
         rule: rule, episodeID: UUID(), target: target, token: intervention.current())
       let runtime = PolicyFixtureRuntime(
         sample: snapshot, intervention: intervention, policyGate: gate)
-      await runtime.setDelay(revoke ? 0.08 : 0)
+      if revoke { await runtime.holdNextEffect() }
       let coordinator = FixCoordinator(
-        runtime: runtime, gate: intervention, exitSeconds: 0.5,
-        verificationSeconds: 1, save: { _ in }, publish: { _ in }, automationGate: gate)
+        runtime: runtime, gate: intervention, exitSeconds: 10,
+        verificationSeconds: 10, save: { _ in }, publish: { _ in }, automationGate: gate)
       let id = try await coordinator.executeAutomatic(
         rule: rule, permit: permit, target: target,
         snapshot: snapshot, settings: settings)
@@ -146,18 +154,36 @@ final class ReadinessTestServer: @unchecked Sendable {
       XCTAssertFalse(executing?.forceConfirmed ?? true)
       await coordinator.approve(
         sessionID: id, planID: executing!.plan!.id, action: .forceQuit, forceConfirmed: true)
-      if revoke { context.enabled = false; gate.configure(context: context, rules: [rule]) }
-      try await Task.sleep(for: .milliseconds(150))
-      XCTAssertEqual(await runtime.effectCount(), revoke ? 0 : 1)
       if revoke {
-        XCTAssertEqual(await coordinator.current()?.result?.outcome, .needsAction)
-      } else {
-        for _ in 0..<5 {
+        // Revoke at the effect boundary, independent of scheduler speed or runner load.
+        let readyDeadline = Date().addingTimeInterval(5)
+        while Date() < readyDeadline {
+          if await runtime.isWaitingForEffect() { break }
+          try await Task.sleep(for: .milliseconds(10))
+        }
+        guard await runtime.isWaitingForEffect() else {
+          await runtime.releaseEffect()
+          throw FixError.unavailable("The fixture did not reach its policy effect barrier.")
+        }
+        context.enabled = false; gate.configure(context: context, rules: [rule])
+        await runtime.releaseEffect()
+      }
+      let finishDeadline = Date().addingTimeInterval(5)
+      while Date() < finishDeadline {
+        if !revoke {
           var sample = await runtime.freshSnapshot(); sample.date = Date()
           await coordinator.observe(sample)
-          try await Task.sleep(for: .milliseconds(5))
         }
-        let finished = await coordinator.current()
+        if await coordinator.current()?.phase == .finished { break }
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      let finished = await coordinator.current()
+      XCTAssertEqual(finished?.phase, .finished)
+      XCTAssertEqual(await runtime.effectCount(), revoke ? 0 : 1)
+      if revoke {
+        XCTAssertEqual(finished?.result?.outcome, .needsAction)
+        XCTAssertTrue(finished?.result?.message.contains("permission") ?? false)
+      } else {
         XCTAssertEqual(finished?.phase, .finished)
         XCTAssertEqual(finished?.result?.targetResolved, true)
         XCTAssertEqual(finished?.result?.systemImproved, false)
