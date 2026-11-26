@@ -6,6 +6,7 @@ import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
+  @Published var control = ControlSummary()
   @Published var experience = ExperienceSummary()
   @Published var experienceMessage: String?
   @Published var requestedSection: String?
@@ -48,6 +49,13 @@ final class AppModel: ObservableObject {
         invalidateFix("Relevant settings changed. Assess a new plan.")
         experience.apps = []; experience.alerts = []
       }
+      if settings.controls.externalActionsEnabled != oldValue.controls.externalActionsEnabled {
+        automationGate.invalidate()
+        if !settings.controls.externalActionsEnabled, fixSession?.authority == .policy {
+          invalidateFix("External automation was stopped. No further steps will be sent.")
+        }
+      }
+      configureAutomation()
       configurationRevision &+= 1
       let revision = configurationRevision, value = settings
       Task { await engine?.configure(value, revision: revision) }
@@ -56,14 +64,29 @@ final class AppModel: ObservableObject {
   let history: HistoryStore?
   let liveExperience: ExperienceCoordinator
   let demoExperience: ExperienceCoordinator
+  let liveControl: ControlCoordinator
+  let demoControl: ControlCoordinator
+  var controller: ControlCoordinator { demo ? demoControl : liveControl }
   var analytics: ExperienceCoordinator { demo ? demoExperience : liveExperience }
   private var configurationRevision: UInt64 = 0
   private let settingsStore = SettingsStore()
-  private var engine: MonitoringEngine?
+  var engine: MonitoringEngine?
   private var liveFixHistory: [FixSession] = []
   private var demoFixHistory: [FixSession] = []
-  private var fixCoordinator: FixCoordinator?
-  private let interventionGate = InterventionGate()
+  var fixCoordinator: FixCoordinator?
+  let interventionGate = InterventionGate()
+  lazy var automationGate = AutomationGate(intervention: interventionGate)
+  var nativeRuntime: NativeFixRuntime?
+  var automationTask: Task<Void, Never>?
+  var automationWarmup: Double?
+  var lastAutomationSample: (Date, Double)?
+  var manualRequestPending = false
+  var selfCareTask: Task<Void, Never>?
+  var selfCareBudget = SelfRepairBudget()
+  var sampleHeartbeat = ProcessInfo.processInfo.systemUptime
+  @Published var selfCareStatus = "Waiting for monitoring"
+  @Published var automationReasons: [UUID: String] = [:]
+  @Published var automationMessage: String?
   private var fixObservation: Task<Void, Never>?
   private var pressureSource: (any DispatchSourceMemoryPressure)?
   private var wakeObserver: NSObjectProtocol?
@@ -84,6 +107,8 @@ final class AppModel: ObservableObject {
     }
     liveExperience = ExperienceCoordinator(history: history)
     demoExperience = ExperienceCoordinator(history: nil, demo: true)
+    liveControl = ControlCoordinator(store: ControlStore())
+    demoControl = ControlCoordinator(store: nil, demo: true)
     engine = MonitoringEngine(
       settings: settings, history: history,
       experience: liveExperience, demoExperience: demoExperience
@@ -91,7 +116,12 @@ final class AppModel: ObservableObject {
       await self?.receive(update)
     }
     if let engine {
-      let runtime = NativeFixRuntime(engine: engine, gate: interventionGate)
+      let runtime = NativeFixRuntime(
+        engine: engine, gate: interventionGate, automationGate: automationGate,
+        repairObservers: { [weak self] in
+          self?.resetPressureObserver(); ApplicationIconCache.shared.clear()
+        })
+      nativeRuntime = runtime
       let store = history
       fixCoordinator = FixCoordinator(
         runtime: runtime, gate: interventionGate,
@@ -101,13 +131,10 @@ final class AppModel: ObservableObject {
               "Fix requires an available audit history. Monitoring continues; no action was sent.")
           }
           try await store.saveFix(value)
-        }, publish: { [weak self] value in await self?.receiveFix(value) })
+        }, publish: { [weak self] value in await self?.receiveFix(value) },
+        automationGate: automationGate)
     }
-    let source = DispatchSource.makeMemoryPressureSource(
-      eventMask: [.normal, .warning, .critical], queue: .main)
-    pressureSource = source
-    source.setEventHandler { [weak self] in Task { @MainActor in self?.pressureChanged() } }
-    source.activate()
+    resetPressureObserver()
     wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
     ) { [weak self] _ in
@@ -131,7 +158,10 @@ final class AppModel: ObservableObject {
       }
     }
     let delegate = NotificationDelegate()
-    delegate.onOpen = { [weak self] in self?.openDashboard?() }
+    delegate.onOpen = { [weak self] episodeID in
+      if episodeID != nil { self?.requestedSection = "Activity" }
+      self?.openDashboard?()
+    }
     notificationDelegate = delegate
     UNUserNotificationCenter.current().delegate = delegate
     let action = UNNotificationAction(
@@ -142,6 +172,9 @@ final class AppModel: ObservableObject {
     refreshLoginStatus()
     Task {
       await liveExperience.restore()
+      await liveControl.restore()
+      control = await liveControl.summary()
+      configureAutomation()
       experience = await liveExperience.summary()
       if let history {
         if let recovered = await history.recoveryMessage { errorMessage = recovered }
@@ -157,7 +190,16 @@ final class AppModel: ObservableObject {
       await refreshNotificationStatus()
       if CommandLine.arguments.contains("--demo") { await setDemo(true) }
       await engine?.start()
+      startSelfCare()
     }
+  }
+  private func resetPressureObserver() {
+    pressureSource?.cancel()
+    let source = DispatchSource.makeMemoryPressureSource(
+      eventMask: [.normal, .warning, .critical], queue: .main)
+    pressureSource = source
+    source.setEventHandler { [weak self] in Task { @MainActor in self?.pressureChanged() } }
+    source.activate()
   }
   private func pressureChanged() {
     guard let data = pressureSource?.data else { return }
@@ -169,7 +211,11 @@ final class AppModel: ObservableObject {
     guard update.snapshot.demo == demo else { return }
     if let signature = update.configuration, signature != settings.analysisSignature { return }
     if let state = update.experience { experience = state }
+    if update.snapshot.system.pressure == .critical && snapshot?.system.pressure != .critical {
+      ApplicationIconCache.shared.clear()
+    }
     snapshot = update.snapshot
+    sampleHeartbeat = ProcessInfo.processInfo.systemUptime
     if let seed = update.seed {
       timeline = seed
       incidents = []
@@ -177,7 +223,8 @@ final class AppModel: ObservableObject {
       timeline.append(update.snapshot.point)
     }
     timeline.removeAll { update.snapshot.date.timeIntervalSince($0.date) > selectedRange }
-    if timeline.count > 800 { timeline.removeFirst(timeline.count - 800) }
+    let visualLimit = update.snapshot.system.pressure == .critical ? 240 : 800
+    if timeline.count > visualLimit { timeline.removeFirst(timeline.count - visualLimit) }
     fixObservation?.cancel()
     fixObservation = Task { await fixCoordinator?.observe(update.snapshot) }
     if let error = update.error {
@@ -188,16 +235,15 @@ final class AppModel: ObservableObject {
       incidents.sort { $0.date > $1.date }
       if incidents.count > 300 { incidents.removeLast(incidents.count - 300) }
     }
-    if !demo && settings.notifications && notificationStatus == "Allowed" {
-      let suppressed = Set(update.experience?.suppressedIncidentIDs ?? [])
-      let coreAlerts = update.incidents.filter { !suppressed.contains($0.id) }
-      let appAlerts = (update.experience?.newAlerts ?? []).filter { !$0.snoozed }
-      if !coreAlerts.isEmpty {
-        await notify(coreAlerts)
-      } else if let alert = appAlerts.first {
-        await notifyExperience(alert, additional: appAlerts.count - 1)
-      }
-    }
+    let controlUpdate = await controller.ingest(
+      snapshot: update.snapshot, settings: settings,
+      experience: experience, uptime: ProcessInfo.processInfo.systemUptime,
+      deliveryAllowed: settings.notifications && notificationStatus == "Allowed")
+    guard update.snapshot.demo == demo else { return }
+    control = controlUpdate.summary
+    configureAutomation()
+    scheduleAutomation(update.snapshot)
+    for notice in controlUpdate.notices { await notifyEpisode(notice) }
     if !demo && Date().timeIntervalSince(historyRefresh) > 30 { await refreshTimeline() }
   }
   func refreshTimeline(range: TimeInterval? = nil) async {
@@ -207,7 +253,7 @@ final class AppModel: ObservableObject {
     do {
       let points = try await history.timeline(since: Date().addingTimeInterval(-selectedRange))
       guard !demo else { return }
-      timeline = points
+      timeline = Array(points.suffix(snapshot?.system.pressure == .critical ? 240 : 800))
     } catch { errorMessage = error.localizedDescription }
   }
   func setPaused(_ value: Bool) {
@@ -227,6 +273,11 @@ final class AppModel: ObservableObject {
     await fixCoordinator?.cancel(
       message: "Monitoring mode changed. No further native actions will be sent.")
     demo = value
+    automationWarmup = nil; lastAutomationSample = nil
+    automationGate.invalidate(); configureAutomation()
+    if value { await demoControl.resetDemo() }
+    await controller.restore()
+    control = await controller.summary()
     experience = await analytics.summary()
     demoFixHistory = []
     fixHistory = value ? [] : liveFixHistory
@@ -243,7 +294,10 @@ final class AppModel: ObservableObject {
     invalidateFix("The simulation scenario changed. Assess a new plan.")
     scenario = value
     demoFixHistory = []; fixHistory = []
-    Task { await engine?.mode(demo: true, scenario: value) }
+    Task {
+      await demoControl.resetDemo()
+      await engine?.mode(demo: true, scenario: value)
+    }
   }
   func requestNotifications() async {
     do {
@@ -268,23 +322,23 @@ final class AppModel: ObservableObject {
       : status == UNAuthorizationStatus.denied.rawValue
         ? "Denied in System Settings" : "Not requested"
   }
-  private func notify(_ events: [Incident]) async {
-    // A batch produces one concise notification, even when many related workers trigger together.
-    guard let event = events.max(by: { $0.level < $1.level }) else { return }
+  private func notifyEpisode(_ notice: EpisodeNotice) async {
+    guard !demo, settings.notifications, notificationStatus == "Allowed" else {
+      await liveControl.cancelReservation(notice); return
+    }
     let content = UNMutableNotificationContent()
-    content.title = "MemorySentinel · \(event.level.title)"
-    content.subtitle =
-      event.identity.map {
-        "\(event.processName ?? "Process") · PID \($0.pid) · \(Format.bytes(event.footprint))"
-      } ?? "System memory requires attention"
-    content.body =
-      "\(event.reason.prefix(350))\nSave work, review the dashboard, and close unneeded workloads."
-    content.sound = .default
+    content.title = "MemorySentinel · \(notice.title)"
+    content.body = String(notice.body.prefix(1000))
+    content.sound = notice.sound ? .default : nil
     content.categoryIdentifier = "MEMORY_RISK"
+    content.userInfo = ["episodeID": notice.episodeID.uuidString]
     do {
       try await UNUserNotificationCenter.current().add(
-        UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
-    } catch { errorMessage = "Notification delivery failed: \(error.localizedDescription)" }
+        UNNotificationRequest(identifier: notice.id, content: content, trigger: nil))
+    } catch {
+      await liveControl.deliveryFailed(notice, message: error.localizedDescription)
+      control = await controller.summary()
+    }
   }
   func testNotification() async {
     let identifier = UUID().uuidString
@@ -361,6 +415,8 @@ final class AppModel: ObservableObject {
       do {
         try await history?.clear()
         await liveExperience.reload()
+        await liveControl.clearHistory()
+        control = await liveControl.summary()
         experience = await liveExperience.summary()
         timeline = []
         incidents = []
@@ -401,13 +457,28 @@ final class AppModel: ObservableObject {
     }
     if value.approvedAction == .restartMonitoring && value.phase == .verifying { paused = false }
     await (value.demo ? demoExperience : liveExperience).observeFix(value)
+    await (value.demo ? demoControl : liveControl).observeFix(value)
+    if value.demo == demo { control = await controller.summary() }
+    configureAutomation()
     if value.demo == demo { experience = await analytics.summary() }
   }
   func beginFix(_ origin: FixOrigin = FixOrigin()) {
     guard fixReady && !maintenance else { return }
+    if let fixSession, (fixSession.authority ?? .manual) == .manual,
+      [.assessing, .executing, .verifying].contains(fixSession.phase)
+    {
+      return
+    }
+    manualRequestPending = true
+    automationGate.invalidate(); automationTask?.cancel()
+    interventionGate.invalidate(); configureAutomation()
     Task {
+      if fixSession?.authority != .manual && fixSession?.phase.active == true {
+        await fixCoordinator?.cancel(message: "A manual Fix has priority over automation.")
+      }
       await synchronizeEngineConfiguration()
       await fixCoordinator?.prepare(origin: origin, settings: settings)
+      manualRequestPending = false; configureAutomation()
     }
   }
   func approveFix(
@@ -424,6 +495,9 @@ final class AppModel: ObservableObject {
   }
   func cancelFix() { invalidateFix("Cancelled by you. A request already sent cannot be undone.") }
   func invalidateFix(_ message: String) {
+    selfCareBudget.resetContinuity(); sampleHeartbeat = ProcessInfo.processInfo.systemUptime
+    automationWarmup = nil; lastAutomationSample = nil
+    automationGate.invalidate(); automationTask?.cancel()
     interventionGate.invalidate()
     Task { await fixCoordinator?.cancel(message: message) }
   }
@@ -448,7 +522,7 @@ final class AppModel: ObservableObject {
 
 }
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
-  @MainActor var onOpen: (() -> Void)?
+  @MainActor var onOpen: ((UUID?) -> Void)?
   func userNotificationCenter(
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
@@ -457,7 +531,9 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @u
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
-    Task { @MainActor in onOpen?() }
+    let episode = (response.notification.request.content.userInfo["episodeID"] as? String).flatMap(
+      UUID.init(uuidString:))
+    Task { @MainActor in onOpen?(episode) }
     completionHandler()
   }
 }

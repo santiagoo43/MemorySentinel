@@ -12,6 +12,7 @@ struct SettingsView: View {
   @State private var exportWindow: NSWindow?
   var body: some View {
     TabView {
+      AutomationSettings().tabItem { Label("Automation", systemImage: "bolt.shield") }
       Form {
         Section("Monitoring") {
           Picker("Sampling interval", selection: $model.settings.interval) {
@@ -63,8 +64,19 @@ struct SettingsView: View {
           slider("Swap growth (MiB/min)", value: $model.settings.swapGrowthMiB, range: 10...1000)
         }
         Section("Notifications") {
-          Toggle("Warning and critical notifications", isOn: $model.settings.notifications)
-          slider("Cooldown (seconds)", value: $model.settings.cooldown, range: 60...1800)
+          Toggle("Enable native notifications", isOn: $model.settings.notifications)
+          Toggle("Warning banners (optional)", isOn: model.controlBinding(\.warningBanners))
+          Toggle(
+            "One critical reminder after five minutes",
+            isOn: model.controlBinding(\.criticalReminder))
+          Text(
+            "Smart mode keeps ordinary warnings in the dashboard. Optional warning banners require at least 60 seconds of evidence, appear once per issue and are limited to three per hour. True critical system pressure can alert immediately."
+          )
+          .font(.caption).foregroundStyle(.secondary)
+          Text(
+            "Delivery follows macOS notification and Focus settings. MemorySentinel does not claim Apple Critical Alerts privileges."
+          )
+          .font(.caption).foregroundStyle(.secondary)
           LabeledContent("System permission", value: model.notificationStatus)
           FixButton(origin: FixOrigin(issue: .notifications), title: "Fix notifications…")
           HStack {

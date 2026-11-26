@@ -15,7 +15,7 @@ struct DashboardView: View {
       VStack(spacing: 0) {
         header
         Divider().opacity(0.5)
-        if let error = model.errorMessage ?? model.experience.error {
+        if let error = model.errorMessage ?? model.experience.error ?? model.control.error {
           HStack {
             Image(systemName: "exclamationmark.triangle")
             Text(error).font(.caption)
@@ -52,6 +52,7 @@ struct DashboardView: View {
           case "Profiles": ProfilesView()
           case "Recordings": RecordingsView()
           case "Sessions": SessionsView()
+          case "Activity": ControlActivityView()
           case "Simulation": simulationView
           default: overview
           }
@@ -98,6 +99,7 @@ struct DashboardView: View {
         .padding(.horizontal, 14).padding(.bottom, 8)
       nav("Overview", "square.grid.2x2")
       nav("Processes", "cpu")
+      nav("Activity", "list.bullet.rectangle.portrait")
       nav("Incidents", "clock.arrow.circlepath")
       nav("Recordings", "record.circle")
       nav("Sessions", "timer")
@@ -147,6 +149,9 @@ struct DashboardView: View {
         Text("Your memory, under watch.").font(.system(size: 11)).foregroundStyle(.secondary)
       }
       Spacer()
+      if model.settings.controls.externalActionsEnabled {
+        Button("Stop automation", role: .destructive) { model.stopAutomation() }
+      }
       if let s = model.snapshot {
         ProfilePicker().frame(width: 150)
         VStack(alignment: .trailing, spacing: 5) {
@@ -165,6 +170,7 @@ struct DashboardView: View {
   private var overview: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 22) {
+        CurrentIssuesSummary()
         if let s = model.snapshot {
           let advisory = model.experience.alerts.max { $0.level < $1.level }
           let headlineRisk = max(s.risk, advisory?.level ?? .normal)

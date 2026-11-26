@@ -39,7 +39,7 @@ struct FixView: View {
         Image(systemName: "wrench.and.screwdriver.fill").font(.title).foregroundStyle(.mint)
         VStack(alignment: .leading, spacing: 4) {
           Text("Fix memory issue").font(.title2.bold());
-          Text("Evidence → approval → action → verification").font(.caption).foregroundStyle(
+          Text("Evidence → authorization → action → verification").font(.caption).foregroundStyle(
             .secondary)
         }
         Spacer()
@@ -446,7 +446,7 @@ struct FixHistoryDetail: View {
             ).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
           }
           Text(
-            "Approved: \(session.approvedAction?.title(target:plan.target) ?? "No action")\nApproval: \(session.approvedAt?.formatted(date:.abbreviated,time:.standard) ?? "Not approved")\nRequest accepted: \(session.actionSentAt?.formatted(date:.abbreviated,time:.standard) ?? "Not recorded")\nExplicit Force Quit confirmation: \(session.forceConfirmed ? "Yes" : "No")"
+            "Authorization: \((session.authority ?? .manual).title)\nAuthorized action: \(session.approvedAction?.title(target:plan.target) ?? "No action")\nAuthorized at: \(session.approvedAt?.formatted(date:.abbreviated,time:.standard) ?? "No action authorized")\nRequest accepted: \(session.actionSentAt?.formatted(date:.abbreviated,time:.standard) ?? "Not recorded")\nExplicit Force Quit confirmation: \(session.forceConfirmed ? "Yes" : "No")"
           ).font(.caption)
           if let replacement = session.replacement {
             Text("Reopened instance: \(replacement.id)").font(

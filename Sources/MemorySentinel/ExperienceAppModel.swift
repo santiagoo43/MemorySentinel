@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import SentinelCore
-import UserNotifications
 
 extension AppModel {
   func activateProfile(_ id: UUID) {
@@ -134,19 +133,5 @@ extension AppModel {
       experienceMessage =
         "Pre-migration settings restored. The replaced settings remain in settings.before-restore.json."
     } catch { errorMessage = error.localizedDescription }
-  }
-  func notifyExperience(_ alert: ExperienceAlert, additional: Int = 0) async {
-    let content = UNMutableNotificationContent()
-    content.title = "MemorySentinel · \(alert.title)"
-    content.body = String(
-      (alert.evidence
-        + (additional > 0
-          ? " \(additional) other application warnings are available in the dashboard." : "") + "\n"
-        + alert.nextStep).prefix(500))
-    content.sound = .default; content.categoryIdentifier = "MEMORY_RISK"
-    do {
-      try await UNUserNotificationCenter.current().add(
-        UNNotificationRequest(identifier: alert.id.uuidString, content: content, trigger: nil))
-    } catch { errorMessage = "Notification delivery failed: \(error.localizedDescription)" }
   }
 }

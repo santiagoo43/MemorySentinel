@@ -23,6 +23,12 @@ struct MenuPopover: View {
         Text("Profile").font(.caption).foregroundStyle(.secondary); ProfilePicker()
       }
       SampleFreshness()
+      if model.settings.controls.externalActionsEnabled {
+        Button("Stop automation", role: .destructive) { model.stopAutomation() }.font(.caption)
+      }
+      Button("Activity · \(model.control.active.count) current issue(s)") {
+        model.showSection("Activity")
+      }.font(.caption)
       if let s = model.snapshot {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
           Text(Format.bytes(s.monitoredBytes)).font(
