@@ -15,6 +15,7 @@ Before a pull request, also run:
 xcrun swift-format lint --strict --recursive Sources Tests Package.swift Scripts/make-icon.swift
 mkdir -p build
 xcrun clang --analyze Sources/CSystem/CSystem.c -I Sources/CSystem/include -o build/CSystem.plist
+xcrun clang --analyze Sources/CSystem/Cooperative.c -I Sources/CSystem/include -o build/Cooperative.plist
 zsh -n Scripts/build-app.sh Scripts/build-direct.sh Scripts/test.sh
 ```
 

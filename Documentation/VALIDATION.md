@@ -1,5 +1,34 @@
 # Validation
 
+## 1.3.0 checks — November 26, 2026
+
+Both the SwiftPM and optimized direct-compiler full suites passed **81 groups and 703 assertions, with no failures**, on Apple Silicon, macOS 26.3.1 and Swift 6.0.3. Coverage adds episode deduplication, persistence, warning/critical budgets, recovery clocks, application origin and bounded caches, exact executable pins, permission scope/expiry, one-use permits, revocation, bounded reopen, durable reservations, interrupted no-replay recovery and self-repair backoff. Long warning/recovery windows use a controlled clock. No real system memory-pressure stress was created to test urgent notifications.
+
+Real native checks stopped an owned disposable task with SIGTERM and relaunched it from its approved specification through the policy runtime. Cooperative readiness tests use a real private Unix socket with kernel peer checks, accepted/busy/unsaved replies, nonce/identity rejection and a bounded no-reply deadline. An independently running AppKit fixture supplies real peer credentials and readiness replies. Its policy-gated normal Quit/reopen passed; an unsaved-work reply was observed; and a real native save prompt left the fixture running without an automatic Force request. Existing identity, refusal, separately confirmed Force and live/demo guards passed. After correcting a temporary-path alias in native replacement verification, both complete suites passed again. A final targeted direct-build run passed 2 native groups / 31 assertions and verified test-child cleanup. Only owned disposable fixtures received test process actions.
+
+Interactive checks on an isolated live-data copy verified the process table, detail/launcher chain, label/search/grouping, exact registration, default-off master switch, UI-to-native policy SIGTERM, Reviewing, Stop/revoke, redacted report and completed five-minute observation (58 samples, 296.5 covered seconds). The live process detail also showed a bundled Python runtime separately from its verified ChatGPT launcher, including each exact application instance. A closed-dashboard development window persisted 41 new samples over about 208 seconds, with a maximum 5.331-second gap and valid SQLite integrity. Reopening showed a one-second-old sample.
+
+The installed app and original data were backed up outside the managed data folder before the local update. The installed 1.3.0 executable matches the extracted ZIP. Native settings checks confirmed self-repair on, external actions off, zero registered permissions, warning banners off and the critical reminder on. Original settings stayed byte-identical. SQLite remains schema 2 with valid integrity; pre-update minute, incident, Fix and experience-frame rows were retained byte-for-byte at the comparison. The existing 48 MiB detailed-payload retention removed 43 oldest rows as new samples arrived. An in-progress recording was preserved as partial with an explicit restart/gap reason, and the experience state advanced normally. The consistent backup preserves the entire pre-update snapshot.
+
+Optimized packaging, strict formatting, both C static analyses, shell syntax and whitespace checks passed locally. The final Apple Silicon ZIP was extracted and its ad-hoc signature verified strictly (1.3.0, build 11, minimum macOS 14). Its executable contains no personal build-home path and the archive contains no local settings, database or control state. The release's `SHA256SUMS` verifies the final archive. The app has no Developer ID signature or notarization ticket. GitHub Actions results are tracked separately under CI below. Previous-version measurements below do not establish 1.3 resource cost.
+
+### 1.3 resource observations
+
+The final installed executable was measured against the original live data at a five-second interval. The open window used Overview's 15-minute chart; the closed window made no dashboard/accessibility queries. Each window lasted 60 seconds. CPU is average percentage of one core; footprint and RSS are separate accounting measures.
+
+| Final installed 1.3.0 | CPU, one core | Peak footprint | Peak RSS |
+|---|---:|---:|---:|
+| Dashboard open | 5.733% | 90.06 MiB | 160.33 MiB |
+| Dashboard closed | 1.717% | 85.20 MiB | 118.86 MiB |
+
+The closed window persisted 12 new samples, with a maximum 5.329-second gap and valid SQLite integrity. The latest stored sample was 0.70 seconds old at the final probe; reopening showed a zero-second-old sample. Activity kept a measured warning visible without requesting another native banner.
+
+Earlier development windows observed 4.333–4.917% open-dashboard CPU and peak footprints of 132.97–195.81 MiB; closed windows observed 1.100–1.967% CPU and 100.25–118.11 MiB peaks. These were different live workloads and runtime states, rather than a matched causal comparison. Other applications remained active. The higher observations are not discarded because the final short window was lower.
+
+The initial 2% CPU / 80 MiB footprint targets are **not generally achieved**. Open UI cost and retained native caches remain optimization work. No memory-pressure stress or long soak was used; these short windows do not establish a long-term ceiling. The older 1.2 measurements below used different conditions and should not be treated as a controlled 1.3 comparison.
+
+Advanced app restart was exercised with owned cooperating fixtures, not arbitrary installed editors or ChatGPT/Codex. There is no built-in integration that proves those apps have no unsaved work. Missing readiness remains a manual decision. Actual hardware sleep/wake, all OS versions and a full accessibility traversal remain unverified, as listed below.
+
 ## 1.2.0 checks
 
 The 1.2.0 release candidate was checked on November 24–25, 2026, on Apple Silicon with 18 GiB RAM, macOS 26.3.1 and Apple Swift 6.0.3. The deployment target remains macOS 14; this does not establish compatibility with every supported OS version.

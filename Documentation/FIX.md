@@ -1,5 +1,7 @@
 # Manual Fix
 
+Manual Fix remains available alongside 1.3's separately registered automation. See [Notifications, task identity and automation](AUTOMATION.md) for safe defaults and exact permissions. A policy action is labelled as policy-authorized; it never fabricates a manual approval. Force Quit always stays manual.
+
 **Fix…** is available from the dashboard, menu bar view, process details and incident details. The first click requests current data and prepares a plan. It never sends a process action by itself.
 
 ## Review and approve

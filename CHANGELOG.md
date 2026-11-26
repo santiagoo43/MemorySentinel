@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0 — 2026-11-26
+
+- Persistent problem episodes group related signals, survive restart and require two minutes of stable measured recovery.
+- Smart notifications keep ordinary warnings visual by default, with optional one-per-episode warning banners and bounded critical reminders.
+- Separate action-required reasons, Reviewing acknowledgement and an Activity audit.
+- Application icons, verified launcher chains, historical origins, application grouping and exact task labels for every displayed process.
+- Explicit, expiring executable-pinned permissions for disposable task SIGTERM and separately specified restart.
+- Advanced normal application restart requires a peer-verified cooperative idle/no-unsaved-work lease. Unsupported applications remain manual.
+- Durable attempt reservations, one-use effect permits, quotas, failure review, manual priority and immediate Stop automation controls.
+- Bounded self-repair of the sole sampler and pressure observer, own cache shedding and three-sample verification.
+- Separate manual, self-repair and policy authority in stored Fix evidence, recordings and reports.
+- Versioned, bounded local control state without replacing the existing SQLite history schema. External permissions remain off on upgrade.
+
 ## 1.2.0 — 2026-11-25
 
 - Work profiles with exact watch rules, notification preferences and application/group reference budgets.

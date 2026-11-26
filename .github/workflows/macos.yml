@@ -35,6 +35,7 @@ jobs:
         run: |
           mkdir -p build
           xcrun clang --analyze Sources/CSystem/CSystem.c -I Sources/CSystem/include -o build/CSystem.plist
+          xcrun clang --analyze Sources/CSystem/Cooperative.c -I Sources/CSystem/include -o build/Cooperative.plist
       - name: Shell syntax
         run: zsh -n Scripts/build-app.sh Scripts/build-direct.sh Scripts/test.sh
       - name: Package app
