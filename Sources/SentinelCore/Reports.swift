@@ -66,7 +66,7 @@ public struct ReportDocument: Sendable, Identifiable {
 
 public enum ReportBuilder {
   private static let semantics =
-    "MemorySentinel 1.2.0 · Local observations. Footprint sums are attributed accounting, not unique physical RAM. Missing data remains unavailable. Differences do not establish causation."
+    "MemorySentinel 1.3.0 · Local observations. Footprint sums are attributed accounting, not unique physical RAM. Missing data remains unavailable. Differences do not establish causation."
   private static func row(_ label: String, _ value: String) -> ReportRow {
     ReportRow(label: label, value: value)
   }
@@ -231,11 +231,12 @@ public enum ReportBuilder {
     func outcome(_ value: Bool?) -> String { value.map { $0 ? "Yes" : "No" } ?? "Unavailable" }
     var rows = [
       row("Recorded at", date(fix.updated)),
+      row("Authorization", (fix.authority ?? .manual).title),
       row("Problem", fix.plan?.diagnosis.kind.title ?? "Unavailable"),
-      row("Approved at", fix.approvedAt.map(date) ?? "Not approved"),
+      row("Authorized at", fix.approvedAt.map(date) ?? "No action authorized"),
       row("Request recorded at", fix.actionSentAt.map(date) ?? "No request recorded"),
       row("Immediate result sample", fix.result?.after.map { date($0.date) } ?? "Unavailable"),
-      row("Approved action", fix.approvedAction?.rawValue ?? "None"),
+      row("Authorized action", fix.approvedAction?.rawValue ?? "None"),
       row("Immediate outcome", fix.result?.outcome.title ?? fix.phase.rawValue),
       row("Action completed", outcome(fix.result?.actionSucceeded)),
       row("Target resolved", outcome(fix.result?.targetResolved)),
@@ -259,7 +260,7 @@ public enum ReportBuilder {
       rows.append(row("Process identity", fix.plan?.target?.process.identity.id ?? "Unavailable"))
       rows.append(row("Recorded result", fix.result?.message ?? fix.message))
     }
-    var sections = [ReportSection(title: "Approved intervention", rows: rows)]
+    var sections = [ReportSection(title: "Authorized intervention", rows: rows)]
     if let followup {
       sections.append(
         ReportSection(

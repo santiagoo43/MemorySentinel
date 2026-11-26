@@ -40,6 +40,7 @@ public enum Classifier {
       var childStart = records[i].identity.startDate
       for _ in 0..<64 {
         guard visited.insert(pid).inserted, let j = positions[pid],
+          records[j].uid == records[i].uid,
           records[j].identity.startDate <= childStart
         else { break }
         if let group = records[j].group {
@@ -94,7 +95,7 @@ public struct LiveCollector: Sendable {
     var unreadable: [Int32] = []
     result.reserveCapacity(max(0, count))
     // Bundle lookups are cached per sample; no argument or environment inspection.
-    var bundles: [String: (String?, String?)] = [:]
+    var bundles: [String: (String?, String?, ApplicationDescriptor)] = [:]
     for pid in ids.prefix(max(0, min(count, ids.count))) where pid > 0 {
       if let record = Self.readProcess(pid, bundles: &bundles) {
         result.append(record)
@@ -109,10 +110,12 @@ public struct LiveCollector: Sendable {
       unreadablePIDs: unreadable)
   }
   public static func readProcess(_ pid: Int32) -> ProcessRecord? {
-    var bundles: [String: (String?, String?)] = [:]
+    var bundles: [String: (String?, String?, ApplicationDescriptor)] = [:]
     return readProcess(pid, bundles: &bundles)
   }
-  private static func readProcess(_ pid: Int32, bundles: inout [String: (String?, String?)])
+  private static func readProcess(
+    _ pid: Int32, bundles: inout [String: (String?, String?, ApplicationDescriptor)]
+  )
     -> ProcessRecord?
   {
     var p = MSProcess(); guard ms_process(pid, &p) != 0 else { return nil }
@@ -124,24 +127,34 @@ public struct LiveCollector: Sendable {
     }
     var bundleID: String?
     var version: String?
+    var application: ApplicationDescriptor?
     if let range = path.range(of: ".app/") {
       let root = String(path[..<range.lowerBound]) + ".app"
       if let cached = bundles[root] {
-        bundleID = cached.0; version = cached.1
+        bundleID = cached.0; version = cached.1; application = cached.2
       } else {
         let bundle = Bundle(path: root)
         bundleID = bundle?.bundleIdentifier
         let short = bundle?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = bundle?.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         version = short.map { $0 + (build.map { " (\($0))" } ?? "") } ?? build
-        bundles[root] = (bundleID, version)
+        let name =
+          bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+          ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+          ?? URL(fileURLWithPath: root).deletingPathExtension().lastPathComponent
+        let descriptor = ApplicationDescriptor(
+          name: name, bundleID: bundleID,
+          bundlePath: root, executablePath: bundle?.executableURL?.resolvingSymlinksInPath().path)
+        application = descriptor; bundles[root] = (bundleID, version, descriptor)
       }
     }
-    return ProcessRecord(
+    var record = ProcessRecord(
       identity: .init(pid: pid, seconds: p.start_sec, microseconds: p.start_usec), ppid: p.ppid,
       pgid: p.pgid, uid: p.uid, name: name, path: path, bundleID: bundleID,
       footprint: p.memory_valid != 0 ? Double(p.footprint) : nil,
       rss: p.memory_valid != 0 ? Double(p.rss) : nil, appVersion: version)
+    record.applicationMetadata = application
+    return record
   }
   public static func validateTarget(_ record: ProcessRecord) throws {
     let code = record.path.withCString {

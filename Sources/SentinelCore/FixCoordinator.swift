@@ -5,6 +5,7 @@ public actor FixCoordinator {
   public typealias Publish = @Sendable (FixSession) async -> Void
   private let runtime: any FixRuntime
   private let gate: InterventionGate
+  private let automationGate: AutomationGate?
   private let save: Save
   private let publish: Publish
   private var session: FixSession?
@@ -22,9 +23,10 @@ public actor FixCoordinator {
   public init(
     runtime: any FixRuntime, gate: InterventionGate, exitSeconds: Double = 45,
     verificationSeconds: Double = 120, approvalSeconds: Double = 120, save: @escaping Save,
-    publish: @escaping Publish
+    publish: @escaping Publish, automationGate: AutomationGate? = nil
   ) {
-    self.runtime = runtime; self.gate = gate; self.exitSeconds = exitSeconds;
+    self.runtime = runtime; self.gate = gate; self.automationGate = automationGate;
+    self.exitSeconds = exitSeconds;
     self.approvalSeconds = min(120, max(0.001, approvalSeconds))
     self.verificationSeconds = min(120, verificationSeconds); self.save = save;
     self.publish = publish
@@ -90,6 +92,79 @@ public actor FixCoordinator {
   public func approve(
     sessionID: UUID, planID: UUID, action: FixAction, forceConfirmed: Bool = false
   ) async {
+    guard session?.authority == nil || session?.authority == .manual else { return }
+    await execute(
+      sessionID: sessionID, planID: planID, action: action,
+      forceConfirmed: forceConfirmed)
+  }
+  /// A policy grant has its own entry point and one-use permit; it never calls manual approval.
+  @discardableResult public func executeAutomatic(
+    rule: AutomationRule, permit: AutomationPermit, target: FixTarget,
+    snapshot: Snapshot, settings: Settings
+  ) async throws -> UUID {
+    guard session?.phase.active != true, let automationGate,
+      gate.current() == permit.token, !permit.token.demo,
+      target.id == permit.target, rule.id == permit.ruleID,
+      rule.revision == permit.ruleRevision, rule.operation == permit.operation,
+      rule.configurationError == nil
+    else { throw FixError.busy }
+    let origin = FixOrigin(
+      identity: target.id, individualProcess: target.application == nil,
+      demoSource: false, episodeID: permit.episodeID)
+    var plan = FixDiagnosis.plan(
+      snapshot: snapshot, settings: settings,
+      origin: origin, target: target, token: permit.token)
+    plan.automation = AutomationExecution(rule: rule, permit: permit)
+    guard plan.automation?.currentlyRelevant(snapshot) == true else {
+      throw FixError.invalidated("The approved automatic trigger no longer has fresh evidence.")
+    }
+    plan.actions = [rule.operation.action]; plan.expires = permit.expires
+    if rule.trigger == .taskFootprint {
+      plan.diagnosis = ProblemDiagnosis(
+        kind: .highFootprint, severity: .warning,
+        identity: target.id, summary: "The separately approved task stop threshold is sustained.",
+        evidence: ["explicitStopBytes": rule.footprintLimit ?? 0],
+        certainty: "Explicit automation threshold; advisory budgets grant no action.")
+      plan.warningFraction = (rule.footprintLimit ?? .infinity) / max(1, snapshot.system.total ?? 1)
+    } else {
+      plan.diagnosis = ProblemDiagnosis(
+        kind: .selectedContributor, severity: snapshot.risk,
+        identity: target.id, summary: "Registered target under measured system pressure.",
+        evidence: [:], certainty: "The permission selects this target; causation is not inferred.")
+    }
+    var value = FixSession(origin: origin, demo: false)
+    value.authority = .policy; value.plan = plan; value.phase = .awaitingApproval
+    try automationGate.claim(permit, sessionID: value.id, planID: plan.id)
+    session = value; comparable = []; lastSample = nil; receiptReady = false; awaitingExit = false
+    await execute(
+      sessionID: value.id, planID: plan.id, action: rule.operation.action,
+      forceConfirmed: false)
+    return value.id
+  }
+  /// Restricted to the app's own monitor. No process action is accepted by this API.
+  @discardableResult public func repairMonitoring(snapshot: Snapshot, settings: Settings)
+    async throws -> UUID
+  {
+    guard session?.phase.active != true, !snapshot.demo, !gate.current().demo else {
+      throw FixError.busy
+    }
+    let origin = FixOrigin(issue: .monitoringFailure, demoSource: false)
+    var plan = FixDiagnosis.plan(
+      snapshot: snapshot, settings: settings, origin: origin,
+      target: nil, token: gate.current())
+    plan.actions = [.restartMonitoring]
+    var value = FixSession(origin: origin, demo: false)
+    value.authority = .selfRepair; value.plan = plan; value.phase = .awaitingApproval
+    session = value; comparable = []; lastSample = nil; receiptReady = false; awaitingExit = false
+    await execute(
+      sessionID: value.id, planID: plan.id, action: .restartMonitoring, forceConfirmed: false,
+      repairSample: snapshot)
+    return value.id
+  }
+  private func execute(
+    sessionID: UUID, planID: UUID, action: FixAction, forceConfirmed: Bool,
+    repairSample: Snapshot? = nil
+  ) async {
     guard var current = session, current.id == sessionID, current.phase == .awaitingApproval,
       let plan = current.plan, plan.id == planID, plan.actions.contains(action)
     else { return }
@@ -104,7 +179,12 @@ public actor FixCoordinator {
           "This plan expired or the monitoring context changed. Assess again.")
       }
       try await record()
-      let fresh = try await runtime.freshSnapshot()
+      let fresh: Snapshot
+      if current.authority == .selfRepair, action == .restartMonitoring, let repairSample {
+        fresh = repairSample
+      } else {
+        fresh = try await runtime.freshSnapshot()
+      }
       guard stillExecuting(current.id), gate.current() == plan.token, fresh.demo == plan.token.demo
       else { throw FixError.invalidated("Execution was cancelled or the mode changed.") }
       if action.isProcessAction {
@@ -199,13 +279,20 @@ public actor FixCoordinator {
       else { return }
       if !s.processes.contains(where: { $0.identity == target.process.identity }) {
         awaitingExit = false
-        if current.approvedAction == .restartApplication {
+        if current.approvedAction == .restartApplication
+          || current.approvedAction == .restartManagedTask
+        {
           session?.message = "The old instance exited. Revalidating the bundle before reopening…"
           try? await record()
           guard stillExecuting(current.id), gate.current() == plan.token else { return }
           operation = Task { [weak self] in
             do {
-              let identity = try await self?.runtime.relaunch(target: target, token: plan.token);
+              let identity: ProcessIdentity?
+              if plan.automation != nil {
+                identity = try await self?.runtime.relaunchAutomatic(plan: plan)
+              } else {
+                identity = try await self?.runtime.relaunch(target: target, token: plan.token)
+              }
               await self?.didRelaunch(id: current.id, identity: identity)
             } catch { await self?.didFail(id: current.id, error: error.localizedDescription) }
           }
@@ -469,6 +556,7 @@ public actor FixCoordinator {
   }
   private func complete(_ result: FixResult) async {
     let id = session?.id
+    if let permit = session?.plan?.automation?.permit { automationGate?.release(permit.id) }
     gate.invalidate()
     deadline?.cancel(); deadline = nil; operation?.cancel(); operation = nil
     session?.phase = .finished; session?.result = result; session?.message = result.message

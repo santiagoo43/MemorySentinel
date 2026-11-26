@@ -21,6 +21,17 @@ public struct SettingsStore: Sendable {
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
     let backup = url.deletingLastPathComponent().appendingPathComponent("settings.pre-v2.json")
+    let controlBackup = url.deletingLastPathComponent().appendingPathComponent(
+      "settings.pre-v3.json")
+    if let existing = try? Data(contentsOf: url),
+      let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any],
+      object["controlPreferences"] == nil || object["controlPreferences"] is NSNull,
+      !FileManager.default.fileExists(atPath: controlBackup.path)
+    {
+      try existing.write(to: controlBackup, options: .atomic)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600], ofItemAtPath: controlBackup.path)
+    }
     if let existing = try? Data(contentsOf: url),
       let object = try? JSONSerialization.jsonObject(with: existing) as? [String: Any],
       object["profiles"] == nil || object["profiles"] is NSNull,

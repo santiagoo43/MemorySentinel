@@ -4,7 +4,20 @@ import Foundation
 /// All app and process effects, including the legacy Process Detail buttons, share this service.
 @MainActor public final class ProcessActionService {
   public let gate: InterventionGate
+  private var managedChildren: [Process] = []
   public init(gate: InterventionGate) { self.gate = gate }
+  public func validateDisposableTask(_ process: ProcessRecord) throws {
+    try LiveCollector.validateTarget(process)
+    // A bundle wrapper also exists around some CLI interpreters. Native activation policy,
+    // rather than the bundle path or runtime name, identifies an interactive application.
+    if let app = NSRunningApplication(processIdentifier: process.identity.pid),
+      app.activationPolicy != .prohibited
+    {
+      throw FixError.refused(
+        "An interactive application requires the cooperative application permission and a fresh work-state assessment."
+      )
+    }
+  }
   public func resolve(process source: ProcessRecord, in snapshot: Snapshot) throws -> FixTarget {
     guard !snapshot.demo,
       let current = snapshot.processes.first(where: { $0.identity == source.identity }),
@@ -15,6 +28,7 @@ import Foundation
     var child = current
     for _ in 0..<64 {
       guard let parent = snapshot.processes.first(where: { $0.identity.pid == child.ppid }),
+        parent.uid == child.uid,
         parent.identity.startDate <= child.identity.startDate,
         ancestors.insert(parent.identity).inserted
       else { break }
@@ -52,6 +66,7 @@ import Foundation
           for _ in 0..<64 {
             guard seen.insert(c.identity).inserted,
               let parent = snapshot.processes.first(where: { $0.identity.pid == c.ppid }),
+              parent.uid == c.uid,
               parent.identity.startDate <= c.identity.startDate
             else { return false }
             if parent.identity == root.identity { return true }; c = parent
@@ -84,7 +99,8 @@ import Foundation
     try LiveCollector.validateTarget(p)
   }
   public func perform(
-    action: FixAction, target: FixTarget, token: InterventionToken, forceConfirmed: Bool = false
+    action: FixAction, target: FixTarget, token: InterventionToken, forceConfirmed: Bool = false,
+    automaticTask: Bool = false
   ) throws {
     try gate.liveEffect(token: token) {
       // This validation deliberately repeats at the synchronous effect boundary, under the gate.
@@ -111,6 +127,7 @@ import Foundation
         var child = source
         for _ in 0..<64 where !related {
           guard let parent = LiveCollector.readProcess(child.ppid),
+            parent.uid == child.uid,
             parent.identity.startDate <= child.identity.startDate, parent.identity != child.identity
           else { break }
           if parent.identity == p.identity { related = true; break }; child = parent
@@ -120,6 +137,7 @@ import Foundation
         }
       }
       try LiveCollector.validateTarget(p)
+      if automaticTask { try validateDisposableTask(p) }
       switch action {
       case .quitApplication, .restartApplication:
         guard let application = target.application,
@@ -132,7 +150,7 @@ import Foundation
           throw FixError.refused(
             "The normal Quit request was refused or could not be sent. No Force Quit was sent.")
         }
-      case .terminateProcess: try LiveCollector.signal(p, force: false)
+      case .terminateProcess, .restartManagedTask: try LiveCollector.signal(p, force: false)
       case .forceQuit:
         guard forceConfirmed else {
           throw FixError.refused("Force Quit needs its own explicit confirmation.")
@@ -142,8 +160,11 @@ import Foundation
       }
     }
   }
-  public func relaunch(target: FixTarget, token: InterventionToken) async throws -> ProcessIdentity
-  {
+  public func relaunch(
+    target: FixTarget, token: InterventionToken,
+    policy: AutomationExecution? = nil, policyGate: AutomationGate? = nil,
+    planID: UUID? = nil, executable: ExecutableIdentity? = nil
+  ) async throws -> ProcessIdentity {
     guard let application = target.application else {
       throw FixError.refused("No verified app bundle to reopen.")
     }
@@ -151,42 +172,59 @@ import Foundation
       let completion = RelaunchCompletion(continuation)
       completion.startTimeout()
       do {
-        try gate.liveEffect(token: token) {
-          guard try applicationIdentity(bundlePath: application.bundlePath) == application else {
-            throw FixError.invalidated("The app bundle changed; it will not be reopened.")
-          }
-          if let original = LiveCollector.readProcess(target.process.identity.pid) {
-            guard original.identity != target.process.identity else {
-              throw FixError.refused("The original app has not exited.")
+        let submit = {
+          try self.gate.liveEffect(token: token) {
+            guard try self.applicationIdentity(bundlePath: application.bundlePath) == application
+            else {
+              throw FixError.invalidated("The app bundle changed; it will not be reopened.")
             }
-          } else if LiveCollector.processExists(target.process.identity.pid) {
-            throw FixError.refused("The old process is unreadable; exit cannot be verified.")
-          }
-          if let existing = NSRunningApplication.runningApplications(
-            withBundleIdentifier: application.bundleID
-          ).first(where: {
-            !$0.isTerminated
-              && $0.bundleURL?.resolvingSymlinksInPath().path == application.bundlePath
-              && $0.executableURL?.resolvingSymlinksInPath().path == application.executablePath
-              && Self.verifiedReplacement(
-                LiveCollector.readProcess($0.processIdentifier), target: target) != nil
-          }) {
-            completion.finish(.success(existing.processIdentifier)); return
-          }
-          let configuration = NSWorkspace.OpenConfiguration();
-          configuration.createsNewApplicationInstance = false
-          NSWorkspace.shared.openApplication(
-            at: URL(fileURLWithPath: application.bundlePath), configuration: configuration
-          ) { @Sendable app, error in
-            if let error {
-              completion.finish(.failure(FixError.unavailable(error.localizedDescription)))
-            } else if let app {
-              completion.finish(.success(app.processIdentifier))
-            } else {
-              completion.finish(
-                .failure(FixError.unavailable("Application launch did not return an identity.")))
+            if let original = LiveCollector.readProcess(target.process.identity.pid) {
+              guard original.identity != target.process.identity else {
+                throw FixError.refused("The original app has not exited.")
+              }
+            } else if LiveCollector.processExists(target.process.identity.pid) {
+              throw FixError.refused("The old process is unreadable; exit cannot be verified.")
+            }
+            if let existing = NSRunningApplication.runningApplications(
+              withBundleIdentifier: application.bundleID
+            ).first(where: {
+              !$0.isTerminated
+                && $0.bundleURL?.resolvingSymlinksInPath().path == application.bundlePath
+                && $0.executableURL?.resolvingSymlinksInPath().path == application.executablePath
+                && Self.verifiedReplacement(
+                  LiveCollector.readProcess($0.processIdentifier), target: target) != nil
+            }) {
+              completion.finish(.success(existing.processIdentifier)); return
+            }
+            let configuration = NSWorkspace.OpenConfiguration();
+            configuration.createsNewApplicationInstance = false
+            NSWorkspace.shared.openApplication(
+              at: URL(fileURLWithPath: application.bundlePath), configuration: configuration
+            ) { @Sendable app, error in
+              if let error {
+                completion.finish(.failure(FixError.unavailable(error.localizedDescription)))
+              } else if let app {
+                completion.finish(.success(app.processIdentifier))
+              } else {
+                completion.finish(
+                  .failure(FixError.unavailable("Application launch did not return an identity.")))
+              }
             }
           }
+        }
+        if let policy {
+          guard let policyGate, let planID, let executable else {
+            throw FixError.refused("The policy reopen permit is unavailable.")
+          }
+          try policyGate.effect(
+            policy.permit, planID: planID, target: target.id,
+            operation: policy.rule.operation, stage: .reopen, executable: executable
+          ) { _ in
+            try executable.validateCurrentMetadata()
+            try submit()
+          }
+        } else {
+          try submit()
         }
       } catch { completion.finish(.failure(error)) }
     }
@@ -217,6 +255,61 @@ import Foundation
     }
     throw FixError.unavailable(
       "The reopened instance could not be verified. No additional launch was requested.")
+  }
+  public func launchManagedTask(
+    plan: FixPlan, policyGate: AutomationGate,
+    executable: ExecutableIdentity
+  ) async throws -> ProcessIdentity {
+    guard let policy = plan.automation, let spec = policy.rule.launch, spec.valid,
+      policy.rule.operation == .restartTask, spec.executable == executable,
+      let target = plan.target
+    else {
+      throw FixError.refused("No separately approved managed launch specification is available.")
+    }
+    managedChildren.removeAll { !$0.isRunning }
+    guard managedChildren.count < 16 else {
+      throw FixError.refused("The bounded managed-child tracking limit is reached.")
+    }
+    let child = Process()
+    child.executableURL = URL(fileURLWithPath: spec.executable.path)
+    child.arguments = spec.arguments
+    child.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
+    child.currentDirectoryURL = spec.directory.map { URL(fileURLWithPath: $0) }
+    child.standardInput = FileHandle.nullDevice; child.standardOutput = FileHandle.nullDevice
+    child.standardError = FileHandle.nullDevice
+    try policyGate.effect(
+      policy.permit, planID: plan.id, target: target.id,
+      operation: .restartTask, stage: .reopen, executable: executable
+    ) { _ in
+      try gate.liveEffect(token: plan.token) {
+        try executable.validateCurrentMetadata()
+        if let old = LiveCollector.readProcess(target.id.pid) {
+          guard old.identity != target.id else {
+            throw FixError.refused("The old task has not exited.")
+          }
+        } else if LiveCollector.processExists(target.id.pid) {
+          throw FixError.refused("The old task is unreadable; its exit is not verified.")
+        }
+        try child.run()
+        managedChildren.append(child)
+      }
+    }
+    for _ in 0..<100 {
+      try Task.checkCancellation()
+      guard gate.current() == plan.token else {
+        throw FixError.invalidated("The context changed during launch.")
+      }
+      if let record = LiveCollector.readProcess(child.processIdentifier),
+        record.identity != target.id, record.uid == policy.rule.owner,
+        record.path == spec.executable.path
+      {
+        return record.identity
+      }
+      guard child.isRunning else { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    throw FixError.unavailable(
+      "The requested task launch could not be verified. No retry was sent.")
   }
   public nonisolated static func verifiedReplacement(_ record: ProcessRecord?, target: FixTarget)
     -> ProcessIdentity?

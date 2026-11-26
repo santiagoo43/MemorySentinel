@@ -14,6 +14,8 @@ module CSystem {
 MODULE
 xcrun clang -O2 -target arm64-apple-macosx14.0 -isysroot "$SENTINEL_SDK_PATH" \
   -I Sources/CSystem/include -c Sources/CSystem/CSystem.c -o "$SENTINEL_DIRECT_BUILD_DIR/CSystem.o"
+xcrun clang -O2 -target arm64-apple-macosx14.0 -isysroot "$SENTINEL_SDK_PATH" \
+  -I Sources/CSystem/include -c Sources/CSystem/Cooperative.c -o "$SENTINEL_DIRECT_BUILD_DIR/Cooperative.o"
 xcrun swiftc -O -whole-module-optimization -parse-as-library -swift-version 6 -D SWIFT_PACKAGE \
   -target arm64-apple-macosx14.0 -sdk "$SENTINEL_SDK_PATH" \
   -I "$SENTINEL_DIRECT_BUILD_DIR/CSystem" -module-name SentinelCore \
@@ -23,14 +25,14 @@ xcrun swiftc -O -whole-module-optimization -parse-as-library -swift-version 6 -D
   -target arm64-apple-macosx14.0 -sdk "$SENTINEL_SDK_PATH" \
   -I "$SENTINEL_DIRECT_BUILD_DIR/CSystem" -I "$SENTINEL_DIRECT_BUILD_DIR/Modules" \
   -module-name MemorySentinel Sources/MemorySentinel/*.swift \
-  "$SENTINEL_DIRECT_BUILD_DIR/libSentinelCore.a" "$SENTINEL_DIRECT_BUILD_DIR/CSystem.o" \
+  "$SENTINEL_DIRECT_BUILD_DIR/libSentinelCore.a" "$SENTINEL_DIRECT_BUILD_DIR/CSystem.o" "$SENTINEL_DIRECT_BUILD_DIR/Cooperative.o" \
   -lproc -lsqlite3 -o "$SENTINEL_DIRECT_BUILD_DIR/MemorySentinel"
 if [[ "${1:-}" == "--tests" ]]; then
   xcrun swiftc -O -parse-as-library -swift-version 6 -D SWIFT_PACKAGE \
     -target arm64-apple-macosx14.0 -sdk "$SENTINEL_SDK_PATH" \
     -I "$SENTINEL_DIRECT_BUILD_DIR/CSystem" -I "$SENTINEL_DIRECT_BUILD_DIR/Modules" \
     -module-name SentinelCoreTests Tests/SentinelCoreTests/*.swift \
-    "$SENTINEL_DIRECT_BUILD_DIR/libSentinelCore.a" "$SENTINEL_DIRECT_BUILD_DIR/CSystem.o" \
+    "$SENTINEL_DIRECT_BUILD_DIR/libSentinelCore.a" "$SENTINEL_DIRECT_BUILD_DIR/CSystem.o" "$SENTINEL_DIRECT_BUILD_DIR/Cooperative.o" \
     -lproc -lsqlite3 -o "$SENTINEL_DIRECT_BUILD_DIR/SentinelCoreTests"
 fi
 print "Built $SENTINEL_DIRECT_BUILD_DIR/MemorySentinel"

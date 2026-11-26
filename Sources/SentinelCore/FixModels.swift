@@ -36,13 +36,15 @@ public struct FixOrigin: Codable, Sendable {
   public var issue: ProblemKind?
   public var demoSource: Bool? = nil
   public var individualProcess: Bool? = nil
+  public var episodeID: UUID? = nil
   public init(
     incidentID: UUID? = nil, identity: ProcessIdentity? = nil, issue: ProblemKind? = nil,
-    individualProcess: Bool = false, demoSource: Bool? = nil
+    individualProcess: Bool = false, demoSource: Bool? = nil, episodeID: UUID? = nil
   ) {
     self.incidentID = incidentID; self.identity = identity; self.issue = issue
     self.individualProcess = individualProcess
     self.demoSource = demoSource
+    self.episodeID = episodeID
   }
 }
 public struct InterventionToken: Codable, Equatable, Sendable {
@@ -95,11 +97,13 @@ public struct FixTarget: Codable, Sendable, Identifiable {
   }
 }
 public enum FixAction: String, Codable, CaseIterable, Sendable, Identifiable {
-  case quitApplication, restartApplication, terminateProcess, forceQuit, restartMonitoring
+  case quitApplication, restartApplication, terminateProcess, restartManagedTask, forceQuit,
+    restartMonitoring
   case activityMonitor, storageSettings, notificationSettings, loginSettings
   public var id: String { rawValue }
   public var isProcessAction: Bool {
-    [.quitApplication, .restartApplication, .terminateProcess, .forceQuit].contains(self)
+    [.quitApplication, .restartApplication, .terminateProcess, .restartManagedTask, .forceQuit]
+      .contains(self)
   }
   public var isGuidance: Bool {
     [.activityMonitor, .storageSettings, .notificationSettings, .loginSettings].contains(self)
@@ -110,6 +114,7 @@ public enum FixAction: String, Codable, CaseIterable, Sendable, Identifiable {
     case .quitApplication: return "Quit \(name)"
     case .restartApplication: return "Quit and reopen \(name)"
     case .terminateProcess: return "Stop \(name) · SIGTERM"
+    case .restartManagedTask: return "Restart registered task \(name)"
     case .forceQuit: return "Force Quit \(name)…"
     case .restartMonitoring: return "Restart monitoring"
     case .activityMonitor: return "Open Activity Monitor"
@@ -136,6 +141,7 @@ public struct FixPlan: Codable, Sendable, Identifiable {
   public var growthThreshold: Double
   public var swapThreshold: Double
   public var explanation: String
+  public var automation: AutomationExecution? = nil
 }
 public struct FixMeasurement: Codable, Sendable {
   public var date: Date
@@ -180,6 +186,16 @@ public struct FixResult: Codable, Sendable {
   public var message: String
   public var nextStep: String
 }
+public enum FixAuthority: String, Codable, Sendable {
+  case manual, selfRepair, policy
+  public var title: String {
+    switch self {
+    case .manual: "Manual approval"
+    case .selfRepair: "Automatic self repair"
+    case .policy: "Explicit automation rule"
+    }
+  }
+}
 public struct FixSession: Codable, Sendable, Identifiable {
   public var id = UUID()
   public var revision: UInt64? = nil
@@ -191,6 +207,7 @@ public struct FixSession: Codable, Sendable, Identifiable {
   public var plan: FixPlan?
   public var approvedAction: FixAction?
   public var approvedAt: Date?
+  public var authority: FixAuthority? = nil
   public var forceConfirmed: Bool = false
   public var actionSentAt: Date?
   public var replacement: ProcessIdentity?
@@ -216,4 +233,10 @@ public protocol FixRuntime: Sendable {
     plan: FixPlan)
     async throws
   func relaunch(target: FixTarget, token: InterventionToken) async throws -> ProcessIdentity
+  func relaunchAutomatic(plan: FixPlan) async throws -> ProcessIdentity
+}
+extension FixRuntime {
+  public func relaunchAutomatic(plan: FixPlan) async throws -> ProcessIdentity {
+    throw FixError.refused("This runtime does not support policy-authorized reopening.")
+  }
 }

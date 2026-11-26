@@ -102,6 +102,7 @@ private struct ProcessState: Sendable {
   var jumpUntil: Date?
   var attributedGroup: String?
   var attributedPath: String?
+  var attributedUID: UInt32?
   var ancestryEvidence: String?
   var latch = RiskLatch()
 }
@@ -142,7 +143,7 @@ public struct Analyzer: Sendable {
     for i in processes.indices {
       var p = processes[i]
       var state = states[p.identity] ?? ProcessState(since: raw.date)
-      if p.group == nil, p.ppid == 1, state.attributedPath == p.path,
+      if p.group == nil, p.ppid == 1, state.attributedPath == p.path, state.attributedUID == p.uid,
         !settings.excludedPaths.contains(p.path), let group = state.attributedGroup
       {
         p.group = group;
@@ -152,6 +153,7 @@ public struct Analyzer: Sendable {
       }
       if p.evidence?.hasPrefix("Verified ancestry") == true {
         state.attributedGroup = p.group; state.attributedPath = p.path;
+        state.attributedUID = p.uid
         state.ancestryEvidence = p.evidence
       }
       var c: RiskLevel = .normal

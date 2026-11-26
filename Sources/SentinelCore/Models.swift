@@ -54,6 +54,8 @@ public struct ProcessRecord: Codable, Sendable, Identifiable {
   public var path: String
   public var bundleID: String?
   public var appVersion: String? = nil
+  public var applicationMetadata: ApplicationDescriptor? = nil
+  public var origin: ProcessOrigin? = nil
   public var footprint: Double?
   public var rss: Double?
   public var group: String?
@@ -123,6 +125,8 @@ public struct Settings: Codable, Equatable, Sendable {
   public var profiles: [WorkProfile]? = nil
   public var activeProfileID: UUID? = nil
   public var disabledBuiltIns: [String]? = nil
+  public var controlPreferences: ControlPreferences? = nil
+  public var controls: ControlPreferences { controlPreferences ?? ControlPreferences() }
   public init() {}
   public var activeProfile: WorkProfile {
     let values = profiles.flatMap { $0.isEmpty ? nil : $0 } ?? WorkProfile.defaults(settings: self)
@@ -152,6 +156,7 @@ public struct Settings: Codable, Equatable, Sendable {
   }
   public func validated() -> Self {
     var s = self
+    s.controlPreferences = controls
     if ![2, 5, 10, 15, 30].contains(s.interval) { s.interval = 5 }
     s.warningFraction = s.warningFraction.isFinite ? min(0.8, max(0.05, s.warningFraction)) : 0.30
     s.criticalFraction =

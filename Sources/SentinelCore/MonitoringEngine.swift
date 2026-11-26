@@ -11,6 +11,8 @@ public struct EngineUpdate: Sendable {
 public actor MonitoringEngine {
   private var settings: Settings
   private var analyzer = Analyzer()
+  private var identityResolver = AppIdentityResolver()
+  private var demoIdentityResolver = AppIdentityResolver()
   private let collector = LiveCollector()
   private let history: HistoryStore?
   private let experience: ExperienceCoordinator?
@@ -92,7 +94,10 @@ public actor MonitoringEngine {
     }
     return fresh
   }
-  public func restart() async throws {
+  public func restart(if authorized: @Sendable () -> Bool = { true }) async throws {
+    guard authorized() else {
+      throw FixError.invalidated("The monitor repair context changed before restart.")
+    }
     stop(); analyzer = Analyzer(); eventPressure = nil; forcedNext = nil; paused = false
     start(); _ = try await freshSnapshot()
   }
@@ -192,7 +197,8 @@ public actor MonitoringEngine {
       let uptimeOrigin = ProcessInfo.processInfo.systemUptime - 895
       for i in 0..<180 {
         guard generation == modeGeneration else { return }
-        let raw = Simulator().sample(step: i, scenario: scenario, origin: origin)
+        var raw = Simulator().sample(step: i, scenario: scenario, origin: origin)
+        raw.processes = demoIdentityResolver.resolve(raw.processes, at: raw.date)
         result = analyzer.evaluate(raw, settings: settings, demo: true)
         points.append(result!.snapshot.point)
         events.append(contentsOf: result!.incidents)
@@ -256,6 +262,11 @@ public actor MonitoringEngine {
       } else if let eventPressure, raw.system.pressure == .unavailable {
         raw.system.pressure = eventPressure
       }
+    }
+    if demo {
+      raw.processes = demoIdentityResolver.resolve(raw.processes, at: raw.date)
+    } else {
+      raw.processes = identityResolver.resolve(raw.processes, at: raw.date)
     }
     let result = analyzer.evaluate(raw, settings: sampleSettings, demo: demo)
     var error: String?

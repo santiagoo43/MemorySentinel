@@ -54,7 +54,75 @@ import Foundation
     let f = FixTests()
     let native = NativeFixTests()
     let experience = ExperienceTests()
+    let control = ControlTests()
+    let automation = AutomationTests()
+    let integration = AutomationIntegrationTests()
     let tests: [(String, () async throws -> Void)] = [
+      (
+        "Native Automation managed task restart",
+        { try await native.testNativePolicyManagedTaskRestart() }
+      ),
+      (
+        "Automation policy execution and revocation",
+        { try await integration.testPolicyExecutionAndRevocation() }
+      ),
+      (
+        "Automation durable reservation and no replay",
+        { try await integration.testDurableReservationAndNoReplay() }
+      ),
+      ("Automation self repair backoff", { integration.testSelfRepairBackoffAndStableRecovery() }),
+      (
+        "Automation changed code review persists",
+        { try await integration.testChangedPermissionReviewSurvivesRestart() }
+      ),
+      (
+        "Automation cooperative readiness protocol",
+        { try await integration.testCooperativeReadinessProtocol() }
+      ),
+      (
+        "Automation exact code and explicit launch",
+        { try automation.testExactIdentityAndLaunchSpecification() }
+      ),
+      (
+        "Automation scope freshness and manual priority",
+        { try automation.testScopeFreshnessAndManualPriority() }
+      ),
+      ("Automation attempt quotas and breaker", { try automation.testAttemptQuotasAndBreaker() }),
+      (
+        "Automation one-use permit and revocation",
+        { try automation.testOneUsePermitAndRevocation() }
+      ),
+      (
+        "Automation bounded reopen and context changes",
+        { try automation.testBoundedReopenAndContextChanges() }
+      ),
+      (
+        "Control cancellation budget and exact scopes",
+        { control.testCancellationBudgetAndScopeCollisions() }
+      ),
+      (
+        "Control atomic store labels and migration",
+        { try await control.testControlStoreLabelsAndRecovery() }
+      ),
+      (
+        "Control coordinator persistence and demo",
+        { try await control.testCoordinatorPersistenceAndDemoIsolation() }
+      ),
+      ("Control unchanged warning and restart", { try control.testUnchangedWarningAndRestart() }),
+      (
+        "Control critical escalation and reviewing",
+        { control.testCriticalEscalationReminderAndReviewing() }
+      ),
+      ("Control recovery and evidence gaps", { control.testRecoveryGapsAndNewEpisode() }),
+      (
+        "Control correlation budgets and clock changes",
+        { try control.testCorrelationBudgetsAndClockChanges() }
+      ),
+      (
+        "Control application and historical origin",
+        { control.testApplicationAndHistoricalOrigin() }
+      ),
+      ("Control origin guards and bounds", { control.testOriginGuardsAndBounds() }),
       (
         "Experience legacy settings and profiles",
         { try experience.testLegacySettingsAndProfiles() }

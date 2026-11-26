@@ -697,11 +697,11 @@ extension ExperienceCoordinator {
       let event = ExperienceEvent(
         date: fix.updated, kind: .fix,
         text:
-          "\(action.title(target: plan.target)): \(fix.phase == .finished ? fix.result?.outcome.title ?? "Finished" : fix.phase.rawValue)",
+          "\((fix.authority ?? .manual).title) · \(action.title(target: plan.target)): \(fix.phase == .finished ? fix.result?.outcome.title ?? "Finished" : fix.phase.rawValue)",
         appKey: fixContexts[fix.id]?.0, process: plan.target?.process.identity)
       appendEventRing([event], now: fix.updated)
       if fixPhases[fix.id] == nil && (history != nil || demo) {
-        triggerRecording(title: "Manual Fix", frame: frame)
+        triggerRecording(title: (fix.authority ?? .manual).title, frame: frame)
       }
       fixPhases[fix.id] = fix.phase
       for i in recordings.indices where recordings[i].status == .recording {

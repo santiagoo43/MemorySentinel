@@ -146,6 +146,7 @@ public enum FixDiagnosis {
   }
   public static func isStillRelevant(_ plan: FixPlan, snapshot s: Snapshot) -> Bool {
     guard s.date.timeIntervalSinceNow > -10, s.date.timeIntervalSinceNow < 5 else { return false }
+    if let automatic = plan.automation { return automatic.currentlyRelevant(s) }
     switch plan.diagnosis.kind {
     case .highFootprint:
       guard let id = plan.diagnosis.identity,

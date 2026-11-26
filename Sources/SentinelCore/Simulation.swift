@@ -36,12 +36,17 @@ public struct Simulator: Sendable {
       pid: scenario == .newPID && step > 10 ? 4201 : 4200,
       seconds: UInt64(origin.timeIntervalSince1970) - 100
         + (scenario == .pidReuse && step > 10 ? 150 : 0))
-    let process = ProcessRecord(
+    var process = ProcessRecord(
       identity: identity, name: scenario == .uncertain ? "codex-like" : "Codex • Simulation",
       path: scenario == .uncertain ? "/tmp/codex-like" : "/Demo/Codex.app/Contents/MacOS/Codex",
       bundleID: scenario == .uncertain ? nil : "com.openai.codex",
       footprint: scenario == .missingMetrics ? nil : size, rss: size * 0.85, appVersion: "1.0 (100)"
     )
+    if scenario != .uncertain {
+      process.applicationMetadata = ApplicationDescriptor(
+        name: "Codex · Simulation", bundleID: "com.openai.codex",
+        bundlePath: "/Demo/Codex.app", executablePath: process.path)
+    }
     let system = SystemMetrics(
       total: 18 * GiB, used: scenario == .missingMetrics ? nil : 7 * GiB + size,
       available: scenario == .missingMetrics ? nil : max(0, 11 * GiB - size), compressed: GiB,
